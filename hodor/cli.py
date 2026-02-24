@@ -2,7 +2,6 @@
 
 import logging
 import os
-import subprocess
 import sys
 from pathlib import Path
 
@@ -13,7 +12,7 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
-from .agent import detect_platform, parse_pr_url, post_review_comment, review_pr
+from .agent import detect_platform, post_review_comment, review_pr
 
 console = Console()
 
@@ -121,7 +120,7 @@ def parse_llm_args(ctx, param, value):
     "--model-canonical-name",
     default=None,
     help="Canonical model name for feature detection (e.g. 'claude-opus-4-6'). "
-         "Required for opaque ARN-based models to enable prompt caching.",
+    "Required for opaque ARN-based models to enable prompt caching.",
 )
 def main(
     pr_url: str,
@@ -222,7 +221,7 @@ def main(
     if reasoning_effort:
         console.print(f"[dim]Reasoning Effort: {reasoning_effort}[/dim]")
     if max_iterations == -1:
-        console.print(f"[dim]Max Iterations: Unlimited[/dim]")
+        console.print("[dim]Max Iterations: Unlimited[/dim]")
     else:
         console.print(f"[dim]Max Iterations: {max_iterations}[/dim]")
     console.print()
@@ -238,7 +237,7 @@ def main(
 
             # Run the review
             workspace_path = Path(workspace) if workspace else None
-            review_output = review_pr(
+            review_result = review_pr(
                 pr_url=pr_url,
                 model=model,
                 temperature=temperature,
@@ -252,7 +251,13 @@ def main(
                 output_format="json" if output_json else "markdown",
                 max_iterations=max_iterations,
                 model_canonical_name=model_canonical_name,
+                include_metrics_footer=post,
             )
+            metrics_footer = None
+            if isinstance(review_result, tuple):
+                review_output, metrics_footer = review_result
+            else:
+                review_output = review_result
 
             progress.update(task, description="Review complete!")
             progress.stop()
@@ -275,6 +280,7 @@ def main(
                     pr_url=pr_url,
                     review_text=review_text,
                     model=model,
+                    metrics_footer=metrics_footer,
                 )
 
                 if result.get("success"):

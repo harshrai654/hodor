@@ -3,8 +3,9 @@
 import logging
 import os
 import subprocess
+import time
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, TypedDict
 from urllib.parse import urlparse
 
 from . import _tty as _terminal_safety  # noqa: F401
@@ -17,7 +18,7 @@ from openhands.sdk.workspace import LocalWorkspace
 
 from .github import GitHubAPIError, fetch_github_pr_info, normalize_github_metadata
 from .gitlab import GitLabAPIError, fetch_gitlab_mr_info, post_gitlab_mr_comment
-from .llm import create_hodor_agent, get_api_key
+from .llm import create_hodor_agent
 from .prompts.pr_review_prompt import build_pr_review_prompt
 from .skills import discover_skills
 from .workspace import cleanup_workspace, setup_workspace
@@ -30,6 +31,110 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__)
 
 Platform = Literal["github", "gitlab"]
+
+
+class ReviewMetrics(TypedDict):
+    prompt_tokens: int
+    completion_tokens: int
+    cache_read_tokens: int
+    cache_write_tokens: int
+    reasoning_tokens: int
+    fresh_input_tokens: int
+    total_tokens: int
+    cache_hit_rate: float
+    cost: float
+    review_time_seconds: int
+    review_time_str: str
+
+
+def _extract_review_metrics(conversation: Conversation, review_time_seconds: float) -> ReviewMetrics | None:
+    """Extract aggregate token/cost/time metrics from a conversation."""
+    if not hasattr(conversation, "conversation_stats"):
+        return None
+
+    combined = conversation.conversation_stats.get_combined_metrics()
+    if not combined or not combined.accumulated_token_usage:
+        return None
+
+    usage = combined.accumulated_token_usage
+    prompt_tokens = usage.prompt_tokens or 0
+    completion_tokens = usage.completion_tokens or 0
+    cache_read_tokens = usage.cache_read_tokens or 0
+    cache_write_tokens = usage.cache_write_tokens or 0
+    reasoning_tokens = usage.reasoning_tokens or 0
+    fresh_input = max(prompt_tokens - cache_read_tokens, 0) if cache_read_tokens > 0 else prompt_tokens
+    total_tokens = prompt_tokens + completion_tokens + reasoning_tokens
+    cost = combined.accumulated_cost or 0
+    cache_hit_rate = (cache_read_tokens / prompt_tokens) * 100 if cache_read_tokens > 0 and prompt_tokens > 0 else 0
+
+    return {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "cache_read_tokens": cache_read_tokens,
+        "cache_write_tokens": cache_write_tokens,
+        "reasoning_tokens": reasoning_tokens,
+        "fresh_input_tokens": fresh_input,
+        "total_tokens": total_tokens,
+        "cache_hit_rate": cache_hit_rate,
+        "cost": cost,
+        "review_time_seconds": int(review_time_seconds),
+        "review_time_str": f"{int(review_time_seconds // 60)}m {int(review_time_seconds % 60)}s",
+    }
+
+
+def _format_metrics_markdown(metrics: ReviewMetrics) -> str:
+    """Format review metrics as a compact markdown footer for PR comments."""
+
+    def _humanize_tokens(value: int) -> str:
+        if value >= 1_000_000_000:
+            return f"{value / 1_000_000_000:.2f}B"
+        if value >= 1_000_000:
+            return f"{value / 1_000_000:.2f}M"
+        if value >= 1_000:
+            return f"{value / 1_000:.1f}K"
+        return str(value)
+
+    if metrics["cache_read_tokens"] > 0:
+        tokens_line = (
+            f"- Tokens: in `{_humanize_tokens(metrics['prompt_tokens'])}` "
+            f"(cache `{_humanize_tokens(metrics['cache_read_tokens'])}` | "
+            f"fresh `{_humanize_tokens(metrics['fresh_input_tokens'])}`) | "
+            f"out `{_humanize_tokens(metrics['completion_tokens'])}` | "
+            f"total `{_humanize_tokens(metrics['total_tokens'])}`"
+        )
+    else:
+        tokens_line = (
+            f"- Tokens: in `{_humanize_tokens(metrics['prompt_tokens'])}` | "
+            f"out `{_humanize_tokens(metrics['completion_tokens'])}` | "
+            f"total `{_humanize_tokens(metrics['total_tokens'])}`"
+        )
+
+    lines = [
+        "**Review Metrics**",
+        tokens_line,
+        f"- Cost: `${metrics['cost']:.4f}`",
+        f"- Duration: `{metrics['review_time_str']}`",
+    ]
+    return "\n".join(lines)
+
+
+def _print_metrics(metrics: ReviewMetrics) -> None:
+    """Print review metrics to stdout."""
+    print("\n" + "=" * 60)
+    print("Review Metrics:")
+    if metrics["cache_read_tokens"] > 0:
+        print(f"  - Input:              {metrics['prompt_tokens']:,}")
+        print(f"  - Cache (read):       {metrics['cache_read_tokens']:,} ({metrics['cache_hit_rate']:.0f}% hit)")
+        print(f"  - Fresh input:        {metrics['fresh_input_tokens']:,}")
+    else:
+        print(f"  - Input:              {metrics['prompt_tokens']:,}")
+    print(f"  - Output:             {metrics['completion_tokens']:,}")
+    if metrics["reasoning_tokens"] > 0:
+        print(f"  - Reasoning:          {metrics['reasoning_tokens']:,}")
+    print(f"  - Total:              {metrics['total_tokens']:,}")
+    print(f"  - Cost:               ${metrics['cost']:.4f}")
+    print(f"  - Duration:           {metrics['review_time_str']}")
+    print("=" * 60 + "\n")
 
 
 def detect_platform(pr_url: str) -> Platform:
@@ -92,6 +197,7 @@ def post_review_comment(
     pr_url: str,
     review_text: str,
     model: str | None = None,
+    metrics_footer: str | None = None,
 ) -> dict[str, Any]:
     """
     Post a review comment on a GitHub PR or GitLab MR using CLI tools.
@@ -100,6 +206,7 @@ def post_review_comment(
         pr_url: URL of the pull request or merge request
         review_text: The review text to post as a comment
         model: LLM model used for the review (optional, for transparency)
+        metrics_footer: Optional markdown metrics block appended to the comment
 
     Returns:
         Dictionary with comment posting result
@@ -112,11 +219,11 @@ def post_review_comment(
     except ValueError as e:
         return {"success": False, "error": str(e)}
 
-    # Append model information to review text for transparency
+    review_text_with_footer = review_text
     if model:
-        review_text_with_footer = f"{review_text}\n\n---\n\n*Review generated by Hodor using `{model}`*"
-    else:
-        review_text_with_footer = review_text
+        review_text_with_footer = f"{review_text_with_footer}\n\n---\n\nReview generated by Hodor (model: `{model}`)"
+    if metrics_footer:
+        review_text_with_footer = f"{review_text_with_footer}\n\n{metrics_footer}"
 
     try:
         if platform == "github":
@@ -181,7 +288,8 @@ def review_pr(
     output_format: str = "markdown",
     max_iterations: int = 500,
     model_canonical_name: str | None = None,
-) -> str:
+    include_metrics_footer: bool = False,
+) -> str | tuple[str, str | None]:
     """
     Review a pull request using OpenHands agent with bash tools.
 
@@ -198,9 +306,10 @@ def review_pr(
         workspace_dir: Directory to use for workspace (if None, creates temp dir). Reuses if same repo.
         output_format: Output format - "markdown" or "json" (default: "markdown")
         max_iterations: Maximum number of agent iterations (default: 500, use -1 for unlimited)
+        include_metrics_footer: Return a markdown metrics footer with review output when True
 
     Returns:
-        Review text as string (format depends on output_format)
+        Review text as string, or `(review_text, metrics_footer)` when include_metrics_footer=True
 
     Raises:
         ValueError: If URL is invalid
@@ -324,7 +433,7 @@ def review_pr(
             elif action_type == "FileEditAction":
                 logger.info(f"✏️  Editing file: {getattr(event.action, 'file_path', 'unknown')}")
             elif action_type == "MessageAction":
-                logger.info(f"💬 Agent thinking...")
+                logger.info("💬 Agent thinking...")
 
         # Log observations (results)
         if hasattr(event, "observation") and event.observation:
@@ -337,8 +446,6 @@ def review_pr(
         # Log errors
         if hasattr(event, "error") and event.error:
             logger.warning(f"⚠️  Error: {event.error}")
-
-    import time
 
     start_time = time.time()
 
@@ -388,67 +495,32 @@ def review_pr(
 
         # Calculate review time
         review_time_seconds = time.time() - start_time
-        review_time_str = f"{int(review_time_seconds // 60)}m {int(review_time_seconds % 60)}s"
-
         logger.info(f"Review complete ({len(review_content)} chars)")
 
+        metrics_footer: str | None = None
         # Always print metrics (not just in verbose mode)
         # Access metrics via conversation.conversation_stats (SDK API)
-        if hasattr(conversation, "conversation_stats"):
-            try:
-                combined = conversation.conversation_stats.get_combined_metrics()
+        try:
+            metrics = _extract_review_metrics(conversation, review_time_seconds)
+            if metrics:
+                _print_metrics(metrics)
+                metrics_footer = _format_metrics_markdown(metrics)
 
-                if combined and combined.accumulated_token_usage:
-                    # Token usage breakdown from Metrics object
-                    usage = combined.accumulated_token_usage
-                    prompt_tokens = usage.prompt_tokens or 0
-                    completion_tokens = usage.completion_tokens or 0
-                    cache_read_tokens = usage.cache_read_tokens or 0
-                    cache_write_tokens = usage.cache_write_tokens or 0
-                    reasoning_tokens = usage.reasoning_tokens or 0
+                if verbose and metrics["cache_write_tokens"] > 0:
+                    logger.info(f"  • Cache writes:       {metrics['cache_write_tokens']:,}")
 
-                    # Bedrock reports prompt_tokens as total input (including cached).
-                    # Separate fresh input from cached to show accurate breakdown.
-                    fresh_input = max(prompt_tokens - cache_read_tokens, 0) if cache_read_tokens > 0 else prompt_tokens
-                    total_tokens = prompt_tokens + completion_tokens + reasoning_tokens
+                if verbose:
+                    combined = conversation.conversation_stats.get_combined_metrics()
+                    if combined and combined.response_latencies:
+                        avg_latency = sum(lat.latency for lat in combined.response_latencies) / len(
+                            combined.response_latencies
+                        )
+                        logger.info(f"  • Avg API latency:    {avg_latency:.2f}s")
+        except Exception as e:
+            logger.warning(f"Failed to get metrics: {e}")
 
-                    # Cost from SDK (LiteLLM cost tracking)
-                    cost = combined.accumulated_cost or 0
-
-                    # Cache hit rate: percentage of total input served from cache
-                    cache_hit_rate = 0
-                    if cache_read_tokens > 0 and prompt_tokens > 0:
-                        cache_hit_rate = (cache_read_tokens / prompt_tokens) * 100
-
-                    # Print metrics (always, not just verbose)
-                    print("\n" + "=" * 60)
-                    print("📊 Token Usage Metrics:")
-                    if cache_read_tokens > 0:
-                        print(f"  • Input tokens:       {prompt_tokens:,}")
-                        print(f"    ├─ Cached (read):   {cache_read_tokens:,} ({cache_hit_rate:.0f}%)")
-                        print(f"    └─ Fresh:           {fresh_input:,}")
-                    else:
-                        print(f"  • Input tokens:       {prompt_tokens:,}")
-                    print(f"  • Output tokens:      {completion_tokens:,}")
-                    if reasoning_tokens > 0:
-                        print(f"  • Reasoning tokens:   {reasoning_tokens:,}")
-                    print(f"  • Total tokens:       {total_tokens:,}")
-                    print(f"\n💰 Cost:               ${cost:.4f}")
-                    print(f"⏱️  Review Time:        {review_time_str}")
-                    print("=" * 60 + "\n")
-
-                    # Verbose mode: additional details
-                    if verbose:
-                        if cache_write_tokens > 0:
-                            logger.info(f"  • Cache writes:       {cache_write_tokens:,}")
-                        if combined.response_latencies:
-                            avg_latency = sum(lat.latency for lat in combined.response_latencies) / len(
-                                combined.response_latencies
-                            )
-                            logger.info(f"  • Avg API latency:    {avg_latency:.2f}s")
-            except Exception as e:
-                logger.warning(f"Failed to get metrics: {e}")
-
+        if include_metrics_footer:
+            return review_content, metrics_footer
         return review_content
 
     except Exception as e:
