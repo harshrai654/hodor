@@ -51,7 +51,7 @@ export GIT_PAGER=cat
 **Available commands:**
 - `{pr_diff_cmd}` - List changed files ONLY (run this FIRST, not full diff)
 - `{git_diff_cmd} -- path/to/file` - See changes for ONE specific file at a time
-- `planning_file_editor` - Read full file with context (use sparingly, only when needed)
+- `read` - Read full file with context (use sparingly, only when needed)
 - `grep` - Search for patterns across multiple files efficiently
 
 ## Review Guidelines
@@ -109,7 +109,7 @@ Output all findings that the original author would fix if they knew about it. If
 1. **List files first**: Run `{pr_diff_cmd}` to get the list of changed files (NOT full diff)
 2. **Per-file analysis**: For each file, run `{git_diff_cmd} -- path/to/file` to see its specific changes
 3. **Batch pattern search**: Use `grep` across multiple files to find common bug patterns (null, undefined, TODO, FIXME, etc.)
-4. **Selective deep dive**: Only use `planning_file_editor` to read full file context when the diff alone is insufficient
+4. **Selective deep dive**: Only use `read` to read full file context when the diff alone is insufficient
 5. **Group related files**: Analyze related files together (e.g., implementation + tests, interfaces + implementations)
 6. **Avoid redundancy**: Don't re-read files unnecessarily; make decisions based on diff context
 

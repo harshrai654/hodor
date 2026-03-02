@@ -3,47 +3,38 @@ default:
 
 # Install dependencies
 sync:
-    uv sync --all-extras
+    bun install
 
-# Format code
-fmt:
-    uv tool run black hodor
-
-# Lint code
-lint:
-    uv tool run ruff check hodor
-
-# Fix lint issues
-lint-fix:
-    uv tool run ruff check --fix hodor
-
-# Type check
-typecheck:
-    uv tool run mypy hodor
-
-# Run all checks
-check: fmt lint typecheck
-
-# Auto-fix formatting and linting
-fix: fmt lint-fix
+# Build the project
+build:
+    bun run build
 
 # Run tests
 test:
-    uv run pytest
+    bun run test
 
-# Run tests with coverage report
-test-cov:
-    uv run pytest --cov=hodor --cov-report=html --cov-report=term-missing
+# Run tests in watch mode
+test-watch:
+    bun run test:watch
+
+# Type check
+typecheck:
+    bun run typecheck
+
+# Run all checks
+check: typecheck test
+
+# Run dev CLI
+dev *ARGS:
+    bun run src/cli.ts {{ARGS}}
+
+# Review PR
+review URL *ARGS:
+    bun run src/cli.ts {{URL}} {{ARGS}}
 
 # Clean build artifacts and caches
 clean:
-    rm -rf build/ dist/ *.egg-info .pytest_cache/ .mypy_cache/ .ruff_cache/ htmlcov/ .coverage
-    find . -type d -name __pycache__ -exec rm -rf {} +
-    find . -type f -name "*.pyc" -delete
-
-# Build distribution
-build:
-    uv build
+    rm -rf dist/ node_modules/.cache
 
 # Build Docker image
 docker-build:
@@ -61,10 +52,3 @@ docker-run URL:
         -e GITHUB_TOKEN=${GITHUB_TOKEN:-} \
         -e GITLAB_TOKEN=${GITLAB_TOKEN:-} \
         hodor:local {{URL}}
-
-# Review PR
-review URL *ARGS:
-    uv run hodor {{URL}} {{ARGS}}
-
-# Pre-commit checks
-pre-commit: fix check test

@@ -1,92 +1,74 @@
-# Multi-stage build for smaller final image
-FROM python:3.13-slim AS builder
+FROM node:22-slim AS builder
 
-# Install system dependencies needed for building (git is required for OpenHands SDK)
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends git && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
-
-# Install uv
-RUN pip install --no-cache-dir uv
-
-# Set working directory
 WORKDIR /build
 
-# Copy Python version pin and dependency files
-COPY .python-version pyproject.toml uv.lock README.md ./
+# Copy package files for dependency installation
+COPY package.json package-lock.json* ./
 
-# Copy source code
-COPY hodor ./hodor
+# Install all dependencies (including dev for build)
+RUN npm ci
 
-# Set UV_PROJECT_ENVIRONMENT to create venv at final location
-# This avoids path issues in multi-stage builds
-ENV UV_PROJECT_ENVIRONMENT=/opt/venv
+# Copy source code and config
+COPY tsconfig.json tsup.config.ts ./
+COPY src ./src
+COPY templates ./templates
 
-# Sync dependencies using modern uv workflow
-# Using --frozen to ensure lock file is respected
-# Using --no-editable for production build
-RUN uv sync --no-dev --frozen --no-editable
+# Build the project
+RUN npm run build
+
+# Prune dev dependencies
+RUN npm prune --production
 
 # Final stage
-FROM python:3.13-slim
+FROM node:22-slim
 
-# Install system dependencies and common tools for PR reviews
+# Install system dependencies for PR reviews
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         git \
         curl \
         ca-certificates \
         jq \
-        shellcheck \
         tree \
-        vim \
         less && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-# Install ripgrep for better OpenHands grep/glob performance
+# Install ripgrep
 RUN curl -fsSL "https://github.com/BurntSushi/ripgrep/releases/download/15.1.0/ripgrep_15.1.0-1_amd64.deb" -o /tmp/ripgrep.deb && \
     dpkg -i /tmp/ripgrep.deb && \
     rm /tmp/ripgrep.deb
 
-# Install GitHub CLI (gh) - direct download from releases
+# Install GitHub CLI (gh)
 RUN curl -fsSL "https://github.com/cli/cli/releases/download/v2.83.0/gh_2.83.0_linux_amd64.tar.gz" -o /tmp/gh.tar.gz && \
     tar -xzf /tmp/gh.tar.gz -C /tmp && \
     mv /tmp/gh_2.83.0_linux_amd64/bin/gh /usr/local/bin/ && \
     rm -rf /tmp/gh*
 
-# Install GitLab CLI (glab) - direct download from releases
+# Install GitLab CLI (glab)
 RUN curl -fsSL "https://gitlab.com/gitlab-org/cli/-/releases/v1.77.0/downloads/glab_1.77.0_linux_amd64.tar.gz" -o /tmp/glab.tar.gz && \
     tar -xzf /tmp/glab.tar.gz -C /tmp && \
     mv /tmp/bin/glab /usr/local/bin/ && \
     rm -rf /tmp/glab* /tmp/bin
 
-# Copy virtual environment from builder
-COPY --from=builder /opt/venv /opt/venv
-
-# Copy application files
-COPY --from=builder /build /app
 WORKDIR /app
 
-# Ensure virtual environment is used
-ENV PATH="/opt/venv/bin:$PATH"
+# Copy built application and production deps
+COPY --from=builder /build/dist ./dist
+COPY --from=builder /build/templates ./templates
+COPY --from=builder /build/node_modules ./node_modules
+COPY --from=builder /build/package.json ./
 
-# Set Python to run in unbuffered mode for better logging
-ENV PYTHONUNBUFFERED=1
-
-# Set wider terminal dimensions for better output formatting
+# Set wider terminal dimensions
 ENV COLUMNS=200
 ENV LINES=50
 
-# Create a non-root user for security
+# Create non-root user
 RUN useradd -m -u 1000 hodor && \
-    chown -R hodor:hodor /app /opt/venv && \
-    # Create workspace directory for hodor user
+    chown -R hodor:hodor /app && \
     mkdir -p /workspace /tmp/hodor && \
     chown -R hodor:hodor /workspace /tmp/hodor
 
-# Add labels for metadata
 LABEL org.opencontainers.image.title="Hodor" \
       org.opencontainers.image.description="AI-powered code review agent for GitHub and GitLab" \
       org.opencontainers.image.url="https://github.com/mr-karan/hodor" \
@@ -96,11 +78,7 @@ LABEL org.opencontainers.image.title="Hodor" \
 
 USER hodor
 
-# Set default workspace directory
 ENV HODOR_WORKSPACE=/workspace
 
-# Set entrypoint
-ENTRYPOINT ["hodor"]
-
-# Default command (shows help)
+ENTRYPOINT ["node", "dist/cli.js"]
 CMD ["--help"]
