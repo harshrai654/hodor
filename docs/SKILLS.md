@@ -1,6 +1,6 @@
 # Skills System for Repo-Specific Review Guidelines
 
-Hodor supports OpenHands' skills system, allowing you to customize reviews with repository-specific guidelines. This is particularly useful for:
+Hodor supports a skills system, allowing you to customize reviews with repository-specific guidelines. This is particularly useful for:
 - Project-specific coding standards
 - Architecture patterns to enforce
 - Common bugs to watch for
@@ -9,10 +9,14 @@ Hodor supports OpenHands' skills system, allowing you to customize reviews with 
 
 ## Quick Start
 
-Create a `.cursorrules` file in your repository root:
+Create a `.hodor/skills/` directory in your repository and add markdown files:
+
+```bash
+mkdir -p .hodor/skills
+```
 
 ```markdown
-# Code Review Guidelines for MyProject
+# .hodor/skills/conventions.md
 
 ## Architecture
 - All API handlers must use the RequestValidator middleware
@@ -23,21 +27,11 @@ Create a `.cursorrules` file in your repository root:
 - Never log sensitive data (passwords, tokens, PII)
 - All user input must be sanitized before database queries
 - Rate limiting required on public endpoints
-
-## Performance
-- Database queries in loops are NOT allowed (use batch queries)
-- Cache expensive computations (>100ms) using Redis
-- Image uploads must be resized before storage
-
-## Common Bugs
-- Check for null/undefined before accessing nested properties
-- Always handle promise rejections
-- Validate array length before accessing elements
 ```
 
 ## Skills System Overview
 
-Hodor automatically loads repository-specific review guidelines through the OpenHands SDK's skills system. Skills are discovered from your repository and injected into the agent's context when reviewing PRs.
+Hodor automatically loads repository-specific review guidelines from your repository. Skills are discovered from the workspace and injected into the agent's system prompt when reviewing PRs.
 
 ### Supported Skill Locations
 
@@ -74,63 +68,17 @@ Use `.hodor/skills/` for organized, topic-specific guidelines:
 
 **Format**:
 ```markdown
----
-triggers:
-  - security
-  - auth
-  - authentication
----
-
 # Security Review Guidelines
 
 When reviewing security-related changes:
 - Check for SQL injection vulnerabilities
 - Verify authentication is required
 - Ensure sensitive data is encrypted
-- ...
-```
-
-**When Loaded**: Automatically when PR title/description contains trigger keywords
-
-**Use Case**: Domain-specific checks (security, performance, database, etc.)
-
-**Format**:
-```markdown
-# Security Review Guidelines
-
-Security-specific checks for authentication, authorization, data validation...
 ```
 
 **When Loaded**: Automatically with all other skills
 
 **Use Case**: Organize guidelines by domain (security, performance, database, testing, etc.)
-
-### 3. Advanced: Triggered Skills
-
-*(Feature available in OpenHands SDK but not yet exposed in Hodor)*
-
-Future enhancement - skills that activate based on PR keywords:
-
-**Format**:
-```markdown
----
-triggers:
-  - task
-schema:
-  properties:
-    ticket_id:
-      type: string
-      description: JIRA ticket ID
----
-
-# Review Against Requirements
-
-Verify PR implements requirements from ticket {{ticket_id}}...
-```
-
-**When Loaded**: When user provides required input
-
-**Use Case**: Checking PR against specific requirements or tickets
 
 ## Examples
 
@@ -181,7 +129,7 @@ Verify PR implements requirements from ticket {{ticket_id}}...
 ## Performance
 - Lazy load routes with React.lazy()
 - Optimize images (WebP format, appropriate sizes)
-- Check bundle size impact (run `npm run bundle-analyze`)
+- Check bundle size impact
 
 ## Common Bugs
 - Check for missing dependency arrays in useEffect
@@ -246,64 +194,36 @@ When reviewing security-related code:
 - [ ] Default values make sense
 ```
 
-## Advanced: MCP Integration
-
-*(OpenHands SDK feature not yet exposed in Hodor)*
-
-The OpenHands SDK supports MCP (Model Context Protocol) tool integration through repository skills. This feature could be enabled in future Hodor versions to fetch additional context during reviews:
-
-**.hodor/skills/github-integration.md** (example for future):
-```markdown
----
-mcp_tools:
-  mcpServers:
-    github:
-      command: "npx"
-      args: ["-y", "@modelcontextprotocol/server-github"]
----
-
-# GitHub Integration Review
-
-This skill would fetch additional context via MCP:
-- Previous PRs by the same author
-- Related issues and discussions
-- CI/CD check results
-- Code owners and reviewers
-```
-
 ## How Hodor Loads Skills
 
 When Hodor starts a review:
 
 1. **Workspace Setup**: Clone repo and checkout PR branch
-2. **Skill Discovery**: `discover_skills()` scans workspace for:
+2. **Skill Discovery**: Scans workspace for:
    - `.cursorrules` (simple, single-file guidelines)
    - `agents.md` or `agent.md` (alternative single-file location)
    - `.hodor/skills/*.md` (modular, multi-file guidelines)
-3. **Context Building**: Discovered skills are converted to OpenHands `Skill` objects
-4. **Agent Creation**: `AgentContext` with skills is injected into the OpenHands Agent
-5. **Review**: Agent uses combined guidelines as part of its system prompt
+3. **Context Building**: Discovered skills are appended to the agent's system prompt
+4. **Review**: Agent uses combined guidelines as part of its analysis
 
 **Implementation Details**:
 - Skills are loaded from the repository being reviewed (not from Hodor's own repo)
 - All skills are treated as "repository skills" (always active)
-- Keyword-based triggering is available in OpenHands SDK but not yet exposed in Hodor
 - Verbose mode (`--verbose`) logs which skills were discovered and loaded
 
 ## Best Practices
 
 ### DO:
-- ✅ Keep guidelines concise and actionable
-- ✅ Focus on project-specific patterns (not general best practices)
-- ✅ Include examples of bad patterns to avoid
-- ✅ Update skills as project evolves
-- ✅ Use keyword triggers for optional deep-dives
+- Keep guidelines concise and actionable
+- Focus on project-specific patterns (not general best practices)
+- Include examples of bad patterns to avoid
+- Update skills as project evolves
 
 ### DON'T:
-- ❌ Don't duplicate general coding advice (Hodor already knows this)
-- ❌ Don't make guidelines too long (AI context limits)
-- ❌ Don't include outdated or deprecated patterns
-- ❌ Don't overlap skills (consolidate related guidelines)
+- Don't duplicate general coding advice (Hodor already knows this)
+- Don't make guidelines too long (AI context limits)
+- Don't include outdated or deprecated patterns
+- Don't overlap skills (consolidate related guidelines)
 
 ## Testing Your Skills
 
@@ -312,7 +232,7 @@ Test your skills locally before committing:
 ```bash
 # Review a PR with your local skills
 cd /path/to/your/repo
-hodor https://github.com/owner/repo/pull/123 --verbose
+bun run dist/cli.js https://github.com/owner/repo/pull/123 --workspace . --verbose
 
 # The verbose flag will show which skills were loaded
 ```
@@ -333,16 +253,3 @@ Remember: Hodor already knows general best practices. Your skills should focus o
 - Common bugs in YOUR codebase
 - Team conventions and standards
 - Domain-specific requirements (finance, healthcare, etc.)
-
-## Future Enhancements
-
-Coming soon:
-- [ ] Per-directory skills (e.g., different rules for frontend/ vs backend/)
-- [ ] Skill inheritance (team-wide + project-specific)
-- [ ] MCP server integration for external data
-- [ ] Skill testing framework
-- [ ] Skills marketplace (community-contributed patterns)
-
-## Questions?
-
-See [OpenHands Skills Documentation](https://docs.openhands.dev/sdk/arch/skill) for more details on the underlying skills system.
