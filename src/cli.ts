@@ -18,7 +18,7 @@ program
       "Hodor uses an AI agent that clones the repository, checks out the PR branch,\n" +
       "and analyzes the code using tools (gh, git, glab) for metadata fetching and comment posting.",
   )
-  .version("0.3.0")
+  .version("0.3.2")
   .argument("<pr-url>", "URL of the GitHub PR or GitLab MR to review")
   .option(
     "--model <model>",
