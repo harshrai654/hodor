@@ -367,6 +367,44 @@ export async function reviewPr(opts: {
     // Subscribe to agent events for progress + metrics tracking
     let turnCount = 0;
     let toolCallCount = 0;
+
+    /** Extract human-readable summary from tool args */
+    function formatToolArgs(_toolName: string, args: unknown): string {
+      if (typeof args === "string") return args.slice(0, 200);
+      const obj = args as Record<string, unknown> | undefined;
+      if (!obj) return "";
+      // bash tool: show the command, strip workspace prefix
+      if (obj.command) {
+        return String(obj.command)
+          .replace(new RegExp(`cd ${workspacePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} && `), "")
+          .slice(0, 200);
+      }
+      // grep/find: show pattern + path
+      if (obj.pattern) {
+        const path = obj.path ? ` in ${obj.path}` : "";
+        return `${obj.pattern}${path}`;
+      }
+      // read/ls: show the path
+      if (obj.path || obj.file_path) return String(obj.path ?? obj.file_path);
+      return JSON.stringify(obj).slice(0, 200);
+    }
+
+    /** Extract text content from tool result */
+    function formatToolResult(result: unknown): string {
+      if (typeof result === "string") return result;
+      const obj = result as Record<string, unknown> | undefined;
+      if (!obj) return "";
+      // pi-sdk wraps results as {content: [{type: "text", text: "..."}]}
+      const content = obj.content as Array<{ type?: string; text?: string }> | undefined;
+      if (Array.isArray(content)) {
+        return content
+          .filter((c) => c.type === "text" && c.text)
+          .map((c) => c.text)
+          .join("\n");
+      }
+      return JSON.stringify(result)?.slice(0, 500) ?? "";
+    }
+
     session.subscribe((event) => {
       switch (event.type) {
         case "agent_start":
@@ -387,9 +425,7 @@ export async function reviewPr(opts: {
           onEvent?.({
             type: "tool_start",
             toolName: event.toolName,
-            toolArgs: typeof event.args === "string"
-              ? event.args.slice(0, 120)
-              : JSON.stringify(event.args).slice(0, 120),
+            toolArgs: formatToolArgs(event.toolName, event.args),
           });
           break;
         case "tool_execution_end":
@@ -397,9 +433,7 @@ export async function reviewPr(opts: {
             type: "tool_end",
             toolName: event.toolName,
             isError: event.isError,
-            result: typeof event.result === "string"
-              ? event.result.slice(0, 300)
-              : JSON.stringify(event.result)?.slice(0, 300),
+            result: formatToolResult(event.result),
           });
           break;
         case "message_start":

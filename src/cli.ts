@@ -2,7 +2,6 @@
 
 import { Command } from "commander";
 import chalk from "chalk";
-import ora from "ora";
 import "dotenv/config";
 
 import { detectPlatform, postReviewComment, reviewPr } from "./agent.js";
@@ -80,18 +79,15 @@ program
     const log = outputJson ? console.error : console.log;
     const logStream = outputJson ? process.stderr : process.stdout;
 
-    // Use plain log lines in CI or verbose mode; spinner only for quiet interactive mode
-    const useSpinner = !isCI && !verbose;
-    const spinner = useSpinner ? ora({ stream: logStream }) : null;
     const toolIcons: Record<string, string> = {
-      bash: "terminal",
-      read: "file",
-      grep: "search",
+      bash: "$",
+      read: "cat",
+      grep: "grep",
       find: "find",
       ls: "ls",
     };
 
-    /** Write a line to the output stream */
+    /** Write a line to the log stream */
     function streamLog(msg: string): void {
       logStream.write(`${msg}\n`);
     }
@@ -102,85 +98,55 @@ program
     }
 
     function handleEvent(event: AgentProgressEvent): void {
-      // Verbose/CI mode: plain sequential log lines
-      if (!useSpinner) {
-        switch (event.type) {
-          case "agent_start":
-            streamLog("▶ Agent started, analyzing PR...");
-            break;
-          case "turn_start":
-            streamLog(`\n── Turn ${event.turnIndex ?? "?"} ──`);
-            break;
-          case "tool_start": {
-            const icon = toolIcons[event.toolName ?? ""] ?? event.toolName;
-            const preview = event.toolArgs
-              ? ` ${event.toolArgs.slice(0, 120)}${event.toolArgs.length > 120 ? "…" : ""}`
-              : "";
-            streamLog(`  ▸ [${icon}]${preview}`);
-            break;
-          }
-          case "tool_end": {
-            const icon = toolIcons[event.toolName ?? ""] ?? event.toolName;
-            const status = event.isError ? "✗" : "✓";
-            streamLog(`  ${status} [${icon}]`);
-            if (verbose && event.result) {
-              // Show tool output in verbose mode (dimmed, truncated)
-              const preview = event.result.length > 200
-                ? event.result.slice(0, 200) + "…"
-                : event.result;
-              for (const line of preview.split("\n").slice(0, 8)) {
-                streamLog(chalk.dim(`    │ ${line}`));
-              }
-            }
-            break;
-          }
-          case "thinking_delta":
-            if (verbose && event.delta) {
-              streamWrite(chalk.dim(event.delta));
-            }
-            break;
-          case "text_delta":
-            if (verbose && event.delta) {
-              streamWrite(chalk.cyan(event.delta));
-            }
-            break;
-          case "agent_end":
-            streamLog("\n▶ Extracting review...");
-            break;
-        }
-        return;
-      }
-
-      // Interactive quiet mode — use spinner
       switch (event.type) {
         case "agent_start":
-          spinner!.text = "Agent started, analyzing PR...";
+          streamLog(chalk.dim("▶ Agent started"));
           break;
         case "turn_start":
-          spinner!.text = `Turn ${event.turnIndex ?? "?"} — thinking...`;
-          break;
-        case "thinking":
-          spinner!.text = `Turn ${event.turnIndex ?? "?"} — reasoning...`;
+          streamLog(chalk.dim(`\n── Turn ${event.turnIndex ?? "?"} ──`));
           break;
         case "tool_start": {
           const icon = toolIcons[event.toolName ?? ""] ?? event.toolName;
-          const preview = event.toolArgs
-            ? `: ${event.toolArgs.slice(0, 80)}${event.toolArgs.length > 80 ? "…" : ""}`
-            : "";
-          spinner!.text = `[${icon}]${preview}`;
+          const preview = event.toolArgs ? ` ${event.toolArgs}` : "";
+          const maxLen = 160;
+          const truncated = preview.length > maxLen ? preview.slice(0, maxLen) + "…" : preview;
+          streamLog(chalk.green(`  ${icon}${truncated}`));
           break;
         }
         case "tool_end": {
-          const status = event.isError ? chalk.red("✗") : chalk.green("✓");
-          const icon = toolIcons[event.toolName ?? ""] ?? event.toolName;
-          spinner!.text = `[${icon}] ${status}`;
+          if (event.isError) {
+            streamLog(chalk.red(`  ✗ error`));
+          }
+          if (event.result) {
+            const lines = event.result.split("\n");
+            const maxLines = verbose ? 15 : 6;
+            const maxChars = verbose ? 400 : 200;
+            let chars = 0;
+            for (let i = 0; i < Math.min(lines.length, maxLines); i++) {
+              const line = lines[i];
+              if (chars + line.length > maxChars) {
+                streamLog(chalk.dim(`    …(${lines.length - i} more lines)`));
+                break;
+              }
+              streamLog(chalk.dim(`    ${line}`));
+              chars += line.length;
+            }
+          }
           break;
         }
-        case "turn_end":
-          spinner!.text = `Turn ${event.turnIndex ?? "?"} complete`;
+        case "text_delta":
+          if (event.delta) {
+            streamWrite(event.delta);
+          }
+          break;
+        case "thinking_delta":
+          // Only show reasoning in verbose mode
+          if (verbose && event.delta) {
+            streamWrite(chalk.dim(event.delta));
+          }
           break;
         case "agent_end":
-          spinner!.text = "Extracting review...";
+          streamLog(chalk.dim("\n▶ Extracting review..."));
           break;
       }
     }
@@ -227,8 +193,7 @@ program
       }
       log();
 
-      if (spinner) spinner.start("Setting up workspace...");
-      else streamLog("▶ Setting up workspace...");
+      streamLog(chalk.dim("▶ Setting up workspace..."));
       const { reviewText, metricsFooter } = await reviewPr({
         prUrl,
         model,
@@ -242,8 +207,7 @@ program
         onEvent: handleEvent,
       });
 
-      if (spinner) spinner.succeed("Review complete!");
-      else streamLog("✔ Review complete!");
+      streamLog(chalk.green("✔ Review complete!"));
 
       if (post) {
         log(chalk.cyan("\nPosting review to PR/MR..."));
@@ -280,8 +244,7 @@ program
         }
       }
     } catch (err) {
-      if (spinner) spinner.fail("Review failed");
-      else streamLog("✗ Review failed");
+      streamLog(chalk.red("✗ Review failed"));
       console.error(
         chalk.bold.red(`\nError: ${err instanceof Error ? err.message : err}`),
       );
