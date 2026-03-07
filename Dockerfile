@@ -33,7 +33,11 @@ RUN apt-get update && \
         ca-certificates \
         jq \
         tree \
-        less && \
+        less \
+        python3 \
+        shellcheck \
+        file \
+        diffstat && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
