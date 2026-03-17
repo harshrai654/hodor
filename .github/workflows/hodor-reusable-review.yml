@@ -90,7 +90,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo install --git https://github.com/Ataraxy-Labs/inspect inspect-cli
-          inspect --version
+          inspect -h
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
