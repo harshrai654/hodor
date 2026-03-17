@@ -78,6 +78,18 @@ describe("buildPrReviewPrompt", () => {
     });
 
     expect(prompt).toContain("submit_review");
+    expect(prompt).toContain("query_knowledge_base");
+    expect(prompt).toContain("save_knowledge_base");
+    expect(prompt).toContain("Step 1c — Query durable prior knowledge (MANDATORY)");
+    expect(prompt).toContain("MUST call `query_knowledge_base` at least once");
+    expect(prompt).toContain("call `save_knowledge_base` at least once before `submit_review`");
+    expect(prompt).toContain("Allowed `save_knowledge_base` categories");
+    expect(prompt).toContain("`architecture`");
+    expect(prompt).toContain("`coding_pattern`");
+    expect(prompt).toContain("`service_call_chain`");
+    expect(prompt).toContain("`fundamental_design`");
+    expect(prompt).toContain("Do not save one-off implementation details");
+    expect(prompt).toContain("final PR review comments/findings text");
     expect(prompt).toContain("Do not print the review as normal assistant text.");
     expect(prompt).not.toContain("Output ONLY the raw JSON object");
   });

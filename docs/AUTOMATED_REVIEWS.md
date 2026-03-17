@@ -79,6 +79,86 @@ jobs:
           bun run /app/dist/cli.js "https://github.com/${{ github.repository }}/pull/${{ github.event.pull_request.number }}" --post
 ```
 
+## PR Comment-Invoked Bot (GitHub, no dedicated infra)
+
+Use `issue_comment` to trigger Hodor from a slash command on the PR conversation thread.
+
+### Command format
+
+```text
+/hodor review
+/hodor review Focus on concurrency and authorization boundaries.
+```
+
+### Flow
+
+1. `issue_comment` event fires on new PR comment.
+2. Thin workflow checks:
+   - comment belongs to PR (`github.event.issue.pull_request`)
+   - command starts with `/hodor`
+   - commenter is trusted (`OWNER`, `MEMBER`, `COLLABORATOR`)
+3. Thin workflow calls a central reusable workflow (`workflow_call`) with:
+   - PR number
+   - optional prompt text
+4. Reusable workflow:
+   - installs `inspect` (`cargo install --git https://github.com/Ataraxy-Labs/inspect inspect-cli`)
+   - checks `inspect --version`
+   - runs Hodor with `--post` and optional `--prompt`
+
+### Reference workflow files
+
+- Thin caller: `.github/workflows/hodor-comment-command.yml`
+- Reusable runner: `.github/workflows/hodor-reusable-review.yml`
+
+## Org-Wide Rollout Pattern
+
+To avoid copy/pasting full workflow logic across every repository:
+
+1. Host reusable workflow centrally (for example `org/hodor-bot/.github/workflows/hodor-reusable-review.yml`).
+2. Keep per-repo file minimal and stable:
+
+```yaml
+jobs:
+  review:
+    uses: org/hodor-bot/.github/workflows/hodor-reusable-review.yml@v1
+    with:
+      pr_number: ${{ github.event.issue.number }}
+      prompt: ${{ needs.parse.outputs.prompt }}
+    secrets: inherit
+```
+
+3. Update behavior centrally by releasing a new tag under `v1`.
+
+Manual rollout across repositories:
+
+1. Create a small PR in each target repository that adds only the thin caller workflow.
+2. Pin `uses:` to your central reusable workflow tag (for example `@v1`).
+3. Merge rollout PRs repo-by-repo, then validate by posting `/hodor review` on a test PR.
+
+### Versioning and Governance
+
+- Treat reusable workflow as a product:
+  - protect with `CODEOWNERS`
+  - require review for `.github/workflows/*`
+  - pin third-party actions to commit SHAs where practical
+- Use semantic workflow tags:
+  - `v1.0.0`, `v1.1.0`, `v1.1.1`
+  - move lightweight `v1` tag to latest compatible minor/patch
+- Consumers pin to major (`@v1`) for safe upgrades without per-repo edits.
+
+## Knowledge Base Safety in PR Bot Mode
+
+When using knowledge-base persistence to a sibling repo:
+
+- Configure:
+  - `HODOR_KB_REPO`
+  - `HODOR_KB_BRANCH`
+  - `HODOR_KB_GITHUB_TOKEN` (optional override)
+- For fork PRs, disable writes:
+  - `HODOR_KB_WRITE_ENABLED=false`
+  - `HODOR_KB_PUSH_ON_SAVE=false`
+- Allow query/read even when writes are disabled.
+
 ## Setup for GitLab CI
 
 ### Quick Start (Recommended)

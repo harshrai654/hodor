@@ -15,7 +15,7 @@ on:
     types: [labeled, review_requested]
 
 permissions:
-  contents: read
+  contents: write
   pull-requests: write
   issues: write
 
@@ -102,6 +102,11 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HODOR_KB_REPO: ${{ secrets.HODOR_KB_REPO }}
+          HODOR_KB_BRANCH: main
+          # Trust boundary: forked PRs can query but should never write to KB.
+          HODOR_KB_WRITE_ENABLED: ${{ github.event.pull_request.head.repo.fork && 'false' || 'true' }}
+          HODOR_KB_PUSH_ON_SAVE: ${{ github.event.pull_request.head.repo.fork && 'false' || 'true' }}
         run: |
           cd /tmp/hodor
 

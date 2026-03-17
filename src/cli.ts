@@ -79,6 +79,8 @@ program
       grep: "grep",
       find: "find",
       ls: "ls",
+      query_knowledge_base: "kb?",
+      save_knowledge_base: "kb+",
     };
 
     /** Write a line to the log stream */

@@ -3,20 +3,22 @@ import { join } from "node:path";
 import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { logger } from "./utils/logger.js";
 import { exec } from "./utils/exec.js";
-import {
-  fetchGithubPrInfo,
-  normalizeGithubMetadata,
-} from "./github.js";
-import {
-  fetchGitlabMrInfo,
-  postGitlabMrComment,
-} from "./gitlab.js";
+import { fetchGithubPrInfo, normalizeGithubMetadata } from "./github.js";
+import { fetchGitlabMrInfo, postGitlabMrComment } from "./gitlab.js";
 import { setupWorkspace, cleanupWorkspace } from "./workspace.js";
 import { buildPrReviewPrompt } from "./prompt.js";
 import { parseModelString, mapReasoningEffort, getApiKey } from "./model.js";
 import { formatMetricsMarkdown, printMetrics } from "./metrics.js";
 import { SUBMIT_REVIEW_SCHEMA, validateReviewOutput } from "./review.js";
 import { REVIEW_SYSTEM_PROMPT } from "./system-prompt.js";
+import {
+  QUERY_KNOWLEDGE_BASE_SCHEMA,
+  SAVE_KNOWLEDGE_BASE_SCHEMA,
+  checkKnowledgeBaseHealth,
+  getKnowledgeBaseConfig,
+  queryKnowledgeBase,
+  saveKnowledgeBase,
+} from "./knowledge.js";
 import type {
   Platform,
   ParsedPrUrl,
@@ -27,7 +29,17 @@ import type {
 } from "./types.js";
 
 export interface AgentProgressEvent {
-  type: "tool_start" | "tool_end" | "thinking" | "turn_start" | "turn_end" | "agent_start" | "agent_end" | "text_delta" | "thinking_delta" | "tool_result";
+  type:
+    | "tool_start"
+    | "tool_end"
+    | "thinking"
+    | "turn_start"
+    | "turn_end"
+    | "agent_start"
+    | "agent_end"
+    | "text_delta"
+    | "thinking_delta"
+    | "tool_result";
   toolName?: string;
   toolArgs?: string;
   isError?: boolean;
@@ -59,7 +71,9 @@ export function parsePrUrl(prUrl: string): ParsedPrUrl {
   if (pathParts.length >= 4 && pathParts[2] === "pull") {
     const prNumber = parseInt(pathParts[3], 10);
     if (!Number.isSafeInteger(prNumber) || prNumber <= 0) {
-      throw new Error(`Invalid PR number in URL: ${prUrl}. Expected a positive integer after /pull/.`);
+      throw new Error(
+        `Invalid PR number in URL: ${prUrl}. Expected a positive integer after /pull/.`,
+      );
     }
     return {
       owner: pathParts[0],
@@ -85,11 +99,12 @@ export function parsePrUrl(prUrl: string): ParsedPrUrl {
 
     const repo = pathParts[mrIndex - 2];
     const ownerParts = pathParts.slice(0, mrIndex - 2);
-    const owner =
-      ownerParts.length > 0 ? ownerParts.join("/") : pathParts[0];
+    const owner = ownerParts.length > 0 ? ownerParts.join("/") : pathParts[0];
     const prNumber = parseInt(pathParts[mrIndex + 1], 10);
     if (!Number.isSafeInteger(prNumber) || prNumber <= 0) {
-      throw new Error(`Invalid MR number in URL: ${prUrl}. Expected a positive integer after /merge_requests/.`);
+      throw new Error(
+        `Invalid MR number in URL: ${prUrl}. Expected a positive integer after /merge_requests/.`,
+      );
     }
     return { owner, repo, prNumber, host };
   }
@@ -136,7 +151,9 @@ export async function postReviewComment(opts: {
         "--body",
         body,
       ]);
-      logger.info(`Successfully posted review to GitHub PR #${parsed.prNumber}`);
+      logger.info(
+        `Successfully posted review to GitHub PR #${parsed.prNumber}`,
+      );
       return { success: true, platform: "github", prNumber: parsed.prNumber };
     } else {
       await postGitlabMrComment(
@@ -190,7 +207,9 @@ export async function reviewPr(opts: {
   // Parse PR URL
   const { owner, repo, prNumber, host } = parsePrUrl(prUrl);
   const platform = detectPlatform(prUrl);
-  logger.info(`Platform: ${platform}, Repo: ${owner}/${repo}, PR: ${prNumber}, Host: ${host}`);
+  logger.info(
+    `Platform: ${platform}, Repo: ${owner}/${repo}, PR: ${prNumber}, Host: ${host}`,
+  );
 
   // --- Preflight: validate model + credentials before any expensive I/O ---
   const parsed = parseModelString(model);
@@ -260,7 +279,10 @@ export async function reviewPr(opts: {
     logger.info(`Custom bedrock ARN model — region: ${region}`);
   } else {
     try {
-      piModel = getModel(parsed.provider as "anthropic", parsed.modelId as never);
+      piModel = getModel(
+        parsed.provider as "anthropic",
+        parsed.modelId as never,
+      );
     } catch (err) {
       throw new Error(
         `Unsupported model "${model}": ${err instanceof Error ? err.message : err}`,
@@ -269,18 +291,44 @@ export async function reviewPr(opts: {
   }
   logger.info("Preflight OK — model and credentials validated");
 
+  const targetRepo = `${owner}/${repo}`;
+  let knowledgeBaseConfig = getKnowledgeBaseConfig();
+  if (knowledgeBaseConfig.enabled) {
+    try {
+      const kbHealth = await checkKnowledgeBaseHealth(knowledgeBaseConfig);
+      if (!kbHealth.ok) {
+        logger.warn(
+          `Knowledge base disabled for this run: ${kbHealth.reason ?? "health check failed"}`,
+        );
+        knowledgeBaseConfig = { ...knowledgeBaseConfig, enabled: false };
+      } else if (kbHealth.reason) {
+        logger.info(`Knowledge base preflight: ${kbHealth.reason}`);
+      } else {
+        logger.info(
+          `Knowledge base preflight OK (branch: ${
+            kbHealth.branchExists
+              ? knowledgeBaseConfig.branch
+              : "will bootstrap on first save"
+          }, writable: ${kbHealth.writable})`,
+        );
+      }
+    } catch (err) {
+      logger.warn(`Knowledge base preflight failed, disabling tools: ${err}`);
+      knowledgeBaseConfig = { ...knowledgeBaseConfig, enabled: false };
+    }
+  }
   // --- End preflight ---
-
   // Setup workspace
-  const { workspace, targetBranch, diffBaseSha, isTemporary } = await setupWorkspace({
-    platform,
-    owner,
-    repo,
-    prNumber: String(prNumber),
-    host,
-    workingDir: workspaceDir ?? undefined,
-    reuse: workspaceDir != null,
-  });
+  const { workspace, targetBranch, diffBaseSha, isTemporary } =
+    await setupWorkspace({
+      platform,
+      owner,
+      repo,
+      prNumber: String(prNumber),
+      host,
+      workingDir: workspaceDir ?? undefined,
+      reuse: workspaceDir != null,
+    });
 
   const workspacePath = workspace;
 
@@ -336,7 +384,8 @@ export async function reviewPr(opts: {
       agentsFilesOverride: () => ({ agentsFiles: [] }),
     });
     await resourceLoader.reload();
-    const { skills, diagnostics: skillDiagnostics } = resourceLoader.getSkills();
+    const { skills, diagnostics: skillDiagnostics } =
+      resourceLoader.getSkills();
     if (skills.length > 0) {
       logger.info(`Discovered ${skills.length} repository skill(s)`);
       for (const skill of skills) {
@@ -353,17 +402,22 @@ export async function reviewPr(opts: {
     const submitReviewTool: ToolDefinition = {
       name: "submit_review",
       label: "Submit Review",
-      description: "Submit the final structured review after the analysis is complete.",
+      description:
+        "Submit the final structured review after the analysis is complete.",
       parameters: SUBMIT_REVIEW_SCHEMA,
       execute: async (_toolCallId, params, _signal, _onUpdate, _ctx) => {
         submitReviewCalls++;
         if (submittedReview) {
-          logger.warn("Agent called submit_review more than once; ignoring duplicate submission");
+          logger.warn(
+            "Agent called submit_review more than once; ignoring duplicate submission",
+          );
           return {
-            content: [{
-              type: "text",
-              text: "Review already submitted. Do not call submit_review again.",
-            }],
+            content: [
+              {
+                type: "text",
+                text: "Review already submitted. Do not call submit_review again.",
+              },
+            ],
             details: { ignoredDuplicate: true },
           };
         }
@@ -373,11 +427,120 @@ export async function reviewPr(opts: {
           `Received structured review via submit_review (${submittedReview.findings.length} finding(s))`,
         );
         return {
-          content: [{
-            type: "text",
-            text: "Review received. Do not output the review as normal text.",
-          }],
+          content: [
+            {
+              type: "text",
+              text: "Review received. Do not output the review as normal text.",
+            },
+          ],
           details: {},
+        };
+      },
+    };
+
+    const queryKnowledgeBaseTool: ToolDefinition = {
+      name: "query_knowledge_base",
+      label: "Query Knowledge Base",
+      description:
+        "Search persisted review learnings for architecture, call chains, and durable patterns.",
+      parameters: QUERY_KNOWLEDGE_BASE_SCHEMA,
+      execute: async (_toolCallId, params, _signal, _onUpdate, _ctx) => {
+        const result = await queryKnowledgeBase(
+          knowledgeBaseConfig,
+          targetRepo,
+          params as {
+            query: string;
+            paths?: string[];
+            symbols?: string[];
+            max_results?: number;
+          },
+        );
+        if (!result.ok) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `query_knowledge_base unavailable: ${result.reason ?? "unknown error"}`,
+              },
+            ],
+            details: { ok: false, reason: result.reason },
+          };
+        }
+
+        if (result.matches.length === 0) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: "No prior durable learnings matched this query.",
+              },
+            ],
+            details: { ok: true, matches: [] },
+          };
+        }
+
+        const summary = result.matches
+          .map(
+            (match, index) =>
+              `${index + 1}. [${match.category}] ${match.learning} (confidence: ${match.confidence})`,
+          )
+          .join("\n");
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Matched prior learnings:\n${summary}`,
+            },
+          ],
+          details: { ok: true, matches: result.matches },
+        };
+      },
+    };
+
+    const saveKnowledgeBaseTool: ToolDefinition = {
+      name: "save_knowledge_base",
+      label: "Save Knowledge Base",
+      description:
+        "Persist a high-signal learning. Category must be architecture, coding_pattern, service_call_chain, or fundamental_design.",
+      parameters: SAVE_KNOWLEDGE_BASE_SCHEMA,
+      execute: async (_toolCallId, params, _signal, _onUpdate, _ctx) => {
+        const result = await saveKnowledgeBase(
+          knowledgeBaseConfig,
+          targetRepo,
+          params as {
+            learning: string;
+            category:
+              | "architecture"
+              | "coding_pattern"
+              | "service_call_chain"
+              | "fundamental_design";
+            evidence: string;
+            stability: "low" | "medium" | "high";
+            scope_tags: string[];
+            paths?: string[];
+            symbols?: string[];
+            source_pr?: string;
+          },
+        );
+        if (!result.ok) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `save_knowledge_base skipped: ${result.reason ?? "not saved"}`,
+              },
+            ],
+            details: result,
+          };
+        }
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Learning persisted (${result.status}) with id ${result.entryId ?? "unknown"}.`,
+            },
+          ],
+          details: result,
         };
       },
     };
@@ -393,7 +556,11 @@ export async function reviewPr(opts: {
         createFindTool(workspacePath),
         createLsTool(workspacePath),
       ],
-      customTools: [submitReviewTool],
+      customTools: [
+        queryKnowledgeBaseTool,
+        saveKnowledgeBaseTool,
+        submitReviewTool,
+      ],
       sessionManager: SessionManager.inMemory(),
       settingsManager,
       resourceLoader,
@@ -411,7 +578,12 @@ export async function reviewPr(opts: {
       // bash tool: show the command, strip workspace prefix
       if (obj.command) {
         return String(obj.command)
-          .replace(new RegExp(`cd ${workspacePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} && `), "")
+          .replace(
+            new RegExp(
+              `cd ${workspacePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} && `,
+            ),
+            "",
+          )
           .slice(0, 200);
       }
       // grep/find: show pattern + path
@@ -430,7 +602,9 @@ export async function reviewPr(opts: {
       const obj = result as Record<string, unknown> | undefined;
       if (!obj) return "";
       // pi-sdk wraps results as {content: [{type: "text", text: "..."}]}
-      const content = obj.content as Array<{ type?: string; text?: string }> | undefined;
+      const content = obj.content as
+        | Array<{ type?: string; text?: string }>
+        | undefined;
       if (Array.isArray(content)) {
         return content
           .filter((c) => c.type === "text" && c.text)
@@ -475,8 +649,10 @@ export async function reviewPr(opts: {
           onEvent?.({ type: "thinking" });
           break;
         case "message_update": {
-          const msgEvent = (event as Record<string, unknown>).assistantMessageEvent as
-            { type: string; delta?: string } | undefined;
+          const msgEvent = (event as Record<string, unknown>)
+            .assistantMessageEvent as
+            | { type: string; delta?: string }
+            | undefined;
           if (!msgEvent?.delta) break;
           if (msgEvent.type === "text_delta") {
             onEvent?.({ type: "text_delta", delta: msgEvent.delta });
@@ -492,7 +668,8 @@ export async function reviewPr(opts: {
     await session.prompt(prompt);
 
     // Check for agent errors (pi-ai swallows LLM errors into state.error)
-    const agentError = (session as unknown as { state: { error?: string } }).state?.error;
+    const agentError = (session as unknown as { state: { error?: string } })
+      .state?.error;
     if (agentError) {
       throw new Error(`LLM request failed: ${agentError}`);
     }
@@ -500,21 +677,29 @@ export async function reviewPr(opts: {
     if (!submittedReview) {
       const rawText = session.getLastAssistantText() ?? "";
       if (rawText) {
-        logger.debug(`Last assistant text without submit_review (first 500 chars): ${rawText.slice(0, 500)}`);
+        logger.debug(
+          `Last assistant text without submit_review (first 500 chars): ${rawText.slice(0, 500)}`,
+        );
       } else {
-        const messages = (session as unknown as { state: { messages: unknown[] } }).state?.messages;
+        const messages = (
+          session as unknown as { state: { messages: unknown[] } }
+        ).state?.messages;
         const lastMsg = messages?.[messages.length - 1];
         logger.debug(`Last message: ${JSON.stringify(lastMsg)?.slice(0, 500)}`);
       }
       if (submitReviewCalls > 0) {
-        throw new Error("Agent called submit_review but did not provide a valid review payload");
+        throw new Error(
+          "Agent called submit_review but did not provide a valid review payload",
+        );
       }
       throw new Error("Agent did not call submit_review");
     }
 
     const review = submittedReview as ReviewOutput;
     if (submitReviewCalls > 1) {
-      logger.warn(`Agent called submit_review ${submitReviewCalls} times; using the first valid submission`);
+      logger.warn(
+        `Agent called submit_review ${submitReviewCalls} times; using the first valid submission`,
+      );
     }
     logger.info(
       `Captured ${review.findings.length} finding(s), verdict: ${review.overall_correctness}`,
@@ -537,9 +722,9 @@ export async function reviewPr(opts: {
       usage?: MsgUsage;
     }
 
-    const allMessages = (
-      session as unknown as { state: { messages: AssistantMsg[] } }
-    ).state?.messages ?? [];
+    const allMessages =
+      (session as unknown as { state: { messages: AssistantMsg[] } }).state
+        ?.messages ?? [];
 
     let inputTokens = 0;
     let outputTokens = 0;

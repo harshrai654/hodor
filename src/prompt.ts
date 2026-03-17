@@ -45,7 +45,9 @@ export function buildPrReviewPrompt(opts: {
   try {
     templateText = readFileSync(templateFile, "utf-8");
   } catch (err) {
-    throw new Error(`Failed to load prompt template from ${templateFile}: ${err}`);
+    throw new Error(
+      `Failed to load prompt template from ${templateFile}: ${err}`,
+    );
   }
 
   // Validate ref inputs to prevent shell injection via branch/SHA names.
@@ -61,19 +63,28 @@ export function buildPrReviewPrompt(opts: {
   // Prepare platform-specific commands
   let prDiffCmd: string;
   let gitDiffCmd: string;
+  let inspectDiffCmd: string;
 
   if (platform === "github") {
     prDiffCmd = `git --no-pager diff origin/${targetBranch}...HEAD --name-only`;
     gitDiffCmd = `git --no-pager diff origin/${targetBranch}...HEAD`;
+    // Use merge-base so inspect range matches git's three-dot semantics (PR changes only).
+    // --format markdown is designed for agents. --min-risk medium filters out cosmetic-only entities.
+    inspectDiffCmd = `inspect diff $(git merge-base origin/${targetBranch} HEAD)..HEAD --format markdown --min-risk medium`;
   } else {
     // gitlab
     if (diffBaseSha) {
       prDiffCmd = `git --no-pager diff ${diffBaseSha} HEAD --name-only`;
       gitDiffCmd = `git --no-pager diff ${diffBaseSha} HEAD`;
-      logger.info(`Using GitLab CI_MERGE_REQUEST_DIFF_BASE_SHA: ${diffBaseSha.slice(0, 8)}`);
+      // diffBaseSha is already the exact merge base from CI_MERGE_REQUEST_DIFF_BASE_SHA
+      inspectDiffCmd = `inspect diff ${diffBaseSha}..HEAD --format markdown --min-risk medium`;
+      logger.info(
+        `Using GitLab CI_MERGE_REQUEST_DIFF_BASE_SHA: ${diffBaseSha.slice(0, 8)}`,
+      );
     } else {
       prDiffCmd = `git --no-pager diff origin/${targetBranch}...HEAD --name-only`;
       gitDiffCmd = `git --no-pager diff origin/${targetBranch}...HEAD`;
+      inspectDiffCmd = `inspect diff $(git merge-base origin/${targetBranch} HEAD)..HEAD --format markdown --min-risk medium`;
     }
   }
 
@@ -92,13 +103,15 @@ export function buildPrReviewPrompt(opts: {
   }
 
   // Step 3: Build MR sections
-  const { contextSection, notesSection, reminderSection } = buildMrSections(mrMetadata);
+  const { contextSection, notesSection, reminderSection } =
+    buildMrSections(mrMetadata);
 
   // Step 4: Interpolate
   let prompt = templateText
     .replace(/\{pr_url\}/g, prUrl)
     .replace(/\{pr_diff_cmd\}/g, prDiffCmd)
     .replace(/\{git_diff_cmd\}/g, gitDiffCmd)
+    .replace(/\{inspect_diff_cmd\}/g, inspectDiffCmd)
     .replace(/\{target_branch\}/g, targetBranch)
     .replace(/\{diff_explanation\}/g, diffExplanation)
     .replace(/\{mr_context_section\}/g, contextSection)
@@ -129,8 +142,7 @@ export function buildMrSections(mrMetadata?: MrMetadata | null): {
     contextLines.push(`- Title: ${mrMetadata.title}`);
   }
 
-  const author =
-    mrMetadata.author?.username ?? mrMetadata.author?.name;
+  const author = mrMetadata.author?.username ?? mrMetadata.author?.name;
   if (author) {
     contextLines.push(`- Author: @${author}`);
   }
@@ -206,9 +218,7 @@ function truncateBlock(text: string, limit: number): string {
   return trimmed.slice(0, limit - 1).trimEnd() + "…";
 }
 
-export function normalizeLabelNames(
-  rawLabels: unknown,
-): string[] {
+export function normalizeLabelNames(rawLabels: unknown): string[] {
   if (!rawLabels) return [];
 
   const names: string[] = [];

@@ -200,6 +200,29 @@ jobs:
           bun run /app/dist/cli.js "https://github.com/${{ github.repository }}/pull/${{ github.event.pull_request.number }}" --post
 ```
 
+### GitHub PR Comment Bot (no dedicated infra)
+
+You can invoke Hodor on-demand from PR comments using `issue_comment` and a slash command such as:
+
+```text
+/hodor review Focus on auth regressions and SQL injection risks.
+```
+
+Recommended structure for org rollout:
+
+- Keep a central reusable workflow (`workflow_call`) in one repository.
+- Add a thin caller workflow in each product repository that:
+  - listens for `issue_comment`
+  - validates `/hodor` command and author association
+  - forwards PR number + optional prompt to the reusable workflow
+
+Hodor includes reference workflows:
+
+- `.github/workflows/hodor-comment-command.yml` (thin caller)
+- `.github/workflows/hodor-reusable-review.yml` (shared runner logic)
+
+The reusable workflow installs `inspect` through Cargo and runs `inspect --version` before executing Hodor.
+
 ### GitLab CI
 
 ```yaml

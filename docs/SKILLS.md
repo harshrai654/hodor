@@ -3,6 +3,7 @@
 Hodor uses the upstream `@mariozechner/pi-coding-agent` skills system (`agentskills.io` style).
 
 Skills are:
+
 - Discovered from the reviewed repository at `.pi/skills` or `.hodor/skills`
 - Advertised to the model as metadata
 - Loaded lazily by the agent with the `read` tool when relevant
@@ -70,6 +71,59 @@ When Hodor starts a review:
 4. The agent reads matching skill files on demand during review.
 
 Hodor no longer inlines skill markdown into the system prompt and no longer uses `.cursorrules` or `AGENTS.md` as repository skills.
+
+## Knowledge Base Persistence Skill
+
+Hodor also supports two optional review tools for cross-run memory:
+
+- `query_knowledge_base`
+- `save_knowledge_base`
+
+To guide selective persistence, add a repository skill (recommended path):
+
+```bash
+mkdir -p .hodor/skills/knowledge-base-persistence
+```
+
+Create `.hodor/skills/knowledge-base-persistence/SKILL.md` with frontmatter and rules that enforce:
+
+- query early (after inspect + changed file list)
+- save late (after high-confidence conclusions)
+- save only durable, high-signal learnings (architecture, stable call chain, recurring patterns)
+- reject incidental details (typos, formatting, renames, temporary behavior)
+- never store final PR review comments/findings text as learnings
+- prioritize learnings with high reuse frequency across future reviews
+
+Example frontmatter:
+
+```yaml
+---
+name: knowledge-base-persistence
+description: Save only durable, high-signal review learnings into queryable knowledge base.
+---
+```
+
+## Knowledge Base Environment Variables
+
+Configure persistence to a sibling GitHub repository:
+
+- `HODOR_KB_REPO` (required): sibling repo slug (`owner/repo`) or clone URL
+- `HODOR_KB_BRANCH` (optional): branch to sync, default `main`
+- `HODOR_KB_LOCAL_PATH` (optional): local checkout path for KB repo cache
+- `HODOR_KB_MAX_RESULTS` (optional): default max query results, default `6`
+- `HODOR_KB_WRITE_ENABLED` (optional): `true`/`false`, default `true`
+- `HODOR_KB_PUSH_ON_SAVE` (optional): `true`/`false`, default `false`
+- `HODOR_KB_GITHUB_TOKEN` (optional): token for sibling repo clone/pull/push when default auth is unavailable
+
+Startup behavior:
+- Hodor runs a KB preflight before starting the agent.
+- If the KB repo is unreachable or branch setup is invalid, KB tools are disabled for that run (review still continues).
+- If branch is missing but writes + push-on-save are enabled, Hodor bootstraps the branch on first save.
+
+Data layout in KB repo:
+
+- `entries/<target-repo>.jsonl` (append/update durable learning entries)
+- `indexes/<target-repo>.index.json` (compact lookup index for tags/paths/symbols)
 
 ## Troubleshooting
 
