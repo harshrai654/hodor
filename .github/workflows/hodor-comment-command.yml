@@ -84,6 +84,6 @@ jobs:
       prompt: ${{ needs.parse.outputs.prompt }}
       kb_repo: ${{ vars.HODOR_KB_REPO }}
       kb_branch: ${{ vars.HODOR_KB_BRANCH || 'main' }}
-      model: ${{ vars.HODOR_LLM_MODEL || 'anthropic/claude-sonnet-4-5-20250929' }}
-      hodor_repo: ${{ vars.HODOR_SOURCE_REPO || 'mr-karan/hodor' }}
+      model: ${{ vars.HODOR_LLM_MODEL || 'openai/gpt-5' }}
+      hodor_repo: ${{ vars.HODOR_SOURCE_REPO || 'KoinX-Tech/hodor' }}
     secrets: inherit
