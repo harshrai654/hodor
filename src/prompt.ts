@@ -103,7 +103,7 @@ export function buildPrReviewPrompt(opts: {
   }
 
   // Step 3: Build MR sections
-  const { contextSection, notesSection, reminderSection } =
+  const { contextSection, notesSection, priorReviewSection, reminderSection } =
     buildMrSections(mrMetadata);
 
   // Step 4: Interpolate
@@ -116,6 +116,7 @@ export function buildPrReviewPrompt(opts: {
     .replace(/\{diff_explanation\}/g, diffExplanation)
     .replace(/\{mr_context_section\}/g, contextSection)
     .replace(/\{mr_notes_section\}/g, notesSection)
+    .replace(/\{prior_review_section\}/g, priorReviewSection)
     .replace(/\{mr_reminder_section\}/g, reminderSection);
 
   // Step 5: Append custom instructions
@@ -130,10 +131,16 @@ export function buildPrReviewPrompt(opts: {
 export function buildMrSections(mrMetadata?: MrMetadata | null): {
   contextSection: string;
   notesSection: string;
+  priorReviewSection: string;
   reminderSection: string;
 } {
   if (!mrMetadata) {
-    return { contextSection: "", notesSection: "", reminderSection: "" };
+    return {
+      contextSection: "",
+      notesSection: "",
+      priorReviewSection: "",
+      reminderSection: "",
+    };
   }
 
   const contextLines: string[] = [];
@@ -198,8 +205,15 @@ export function buildMrSections(mrMetadata?: MrMetadata | null): {
     notesSection = `## Existing MR Notes\n${notesSummary}\n`;
   }
 
+  let priorReviewSection = "";
+  const priorReviewSummary = summarizeGithubPriorReviewFeedback(mrMetadata);
+  if (priorReviewSummary) {
+    priorReviewSection =
+      `## Prior Review Feedback (GitHub)\n${priorReviewSummary}\n`;
+  }
+
   let reminderSection = "";
-  if (notesSummary) {
+  if (notesSummary || priorReviewSummary) {
     reminderSection =
       "## Review Note Deduplication\n\n" +
       "The discussions above may already cover some issues. Before reporting a finding:\n" +
@@ -209,7 +223,7 @@ export function buildMrSections(mrMetadata?: MrMetadata | null): {
       "Focus on discovering NEW issues not yet discussed.\n";
   }
 
-  return { contextSection, notesSection, reminderSection };
+  return { contextSection, notesSection, priorReviewSection, reminderSection };
 }
 
 function truncateBlock(text: string, limit: number): string {
@@ -245,4 +259,86 @@ export function normalizeLabelNames(rawLabels: unknown): string[] {
   }
 
   return names;
+}
+
+function summarizeGithubPriorReviewFeedback(mrMetadata: MrMetadata): string {
+  const lines: string[] = [];
+  const reviews = (mrMetadata.reviewerSummaries ?? []).filter(
+    (review) => (review.body ?? "").trim().length > 0 || (review.state ?? "").trim().length > 0,
+  );
+  const inlineComments = (mrMetadata.inlineReviewComments ?? []).filter(
+    (comment) => (comment.body ?? "").trim().length > 0,
+  );
+
+  if (reviews.length > 0) {
+    lines.push("### Review decisions");
+    const orderedReviews = [...reviews].sort((a, b) =>
+      (a.submitted_at ?? "").localeCompare(b.submitted_at ?? ""),
+    );
+    const recentReviews = orderedReviews.slice(-5);
+    for (const review of recentReviews) {
+      const state = normalizeReviewState(review.state);
+      const timestamp = formatTimestamp(review.submitted_at);
+      const body = truncateBlock((review.body ?? "").trim(), 180);
+      const header = timestamp ? `- ${state} (${timestamp})` : `- ${state}`;
+      if (body) {
+        lines.push(`${header}: ${body}`);
+      } else {
+        lines.push(header);
+      }
+    }
+  }
+
+  if (inlineComments.length > 0) {
+    lines.push("### Inline review thread excerpts");
+    const grouped = new Map<string, string[]>();
+    const orderedInline = [...inlineComments].sort((a, b) =>
+      (a.created_at ?? "").localeCompare(b.created_at ?? ""),
+    );
+    const recentInline = orderedInline.slice(-12);
+
+    for (const comment of recentInline) {
+      const path = (comment.path ?? "").trim() || "unknown-file";
+      const body = truncateBlock((comment.body ?? "").trim(), 150);
+      if (!body) continue;
+
+      const linePart =
+        typeof comment.line === "number" && Number.isFinite(comment.line)
+          ? `line ${comment.line}`
+          : "line ?";
+      const sidePart = comment.side ? ` (${comment.side})` : "";
+      const item = `- ${linePart}${sidePart}: ${body}`;
+      const entries = grouped.get(path) ?? [];
+      if (entries.length < 3) {
+        entries.push(item);
+        grouped.set(path, entries);
+      }
+    }
+
+    let emittedFiles = 0;
+    for (const [path, entries] of grouped.entries()) {
+      if (emittedFiles >= 4) break;
+      lines.push(`- \`${path}\``);
+      lines.push(...entries.map((entry) => `  ${entry}`));
+      emittedFiles += 1;
+    }
+  }
+
+  return lines.join("\n");
+}
+
+function normalizeReviewState(state?: string): string {
+  const normalized = (state ?? "").trim().toUpperCase();
+  if (!normalized) return "COMMENTED";
+  return normalized.replace(/_/g, " ");
+}
+
+function formatTimestamp(ts?: string): string {
+  if (!ts) return "";
+  try {
+    const dt = new Date(ts);
+    return dt.toISOString().replace("T", " ").slice(0, 16);
+  } catch {
+    return ts.slice(0, 16);
+  }
 }

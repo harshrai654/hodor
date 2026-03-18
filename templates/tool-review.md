@@ -10,6 +10,8 @@ Identify production bugs and high-signal maintainability issues in the PR's diff
 
 {mr_notes_section}
 
+{prior_review_section}
+
 {mr_reminder_section}
 
 ## Tools
@@ -231,6 +233,8 @@ Output all findings that the original author would fix if they knew about it. If
 - Ignore trivial style unless it obscures meaning or violates documented standards.
 - Flag high-signal duplication/DRY issues when they introduce meaningful ongoing maintenance cost (do not report tiny or intentional duplication).
 - Prefer convention-aware feedback: if `AGENTS.md` or repo docs define a standard and the PR diverges in a risky way, call it out with explicit evidence.
+- If prior review feedback is provided, evaluate those claims against the current diff and evidence; explicitly agree/disagree when relevant.
+- Keep prior-review references anonymous in final output: do not use reviewer names or `@mentions`; use phrases like "earlier feedback" or "a previous review comment".
 - Use one comment per distinct issue (or a multi-line range if necessary).
 - Always keep the line range as short as possible for interpreting the issue. Avoid ranges longer than 5–10 lines; instead, choose the most suitable subrange that pinpoints the problem.
 - The code location should overlap with the diff.

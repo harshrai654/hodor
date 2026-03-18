@@ -24,6 +24,9 @@ export interface MrMetadata {
     web_url?: string;
   };
   Notes?: Array<NoteEntry>;
+  discussionComments?: Array<DiscussionComment>;
+  reviewerSummaries?: Array<ReviewerSummary>;
+  inlineReviewComments?: Array<InlineReviewComment>;
   state?: string;
 }
 
@@ -35,6 +38,38 @@ export interface NoteEntry {
   };
   created_at?: string;
   system?: boolean;
+}
+
+export interface DiscussionComment {
+  body?: string;
+  author?: {
+    username?: string;
+    name?: string;
+  };
+  created_at?: string;
+  system?: boolean;
+}
+
+export interface ReviewerSummary {
+  state?: string;
+  body?: string;
+  author?: {
+    username?: string;
+    name?: string;
+  };
+  submitted_at?: string;
+}
+
+export interface InlineReviewComment {
+  body?: string;
+  path?: string;
+  line?: number;
+  side?: string;
+  author?: {
+    username?: string;
+    name?: string;
+  };
+  created_at?: string;
 }
 
 export interface ReviewMetrics {

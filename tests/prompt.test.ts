@@ -47,20 +47,47 @@ describe("buildMrSections", () => {
     expect(contextSection).toContain("- Author: @testuser");
     expect(contextSection).toContain("- Branches: feature → main");
   });
+
+  it("renders prior GitHub review context anonymously", () => {
+    const metadata = {
+      reviewerSummaries: [
+        {
+          state: "REQUEST_CHANGES",
+          body: "This check can fail when payload is null.",
+          author: { username: "alice" },
+          submitted_at: "2026-03-18T10:00:00Z",
+        },
+      ],
+      inlineReviewComments: [
+        {
+          path: "src/review.ts",
+          line: 42,
+          side: "RIGHT",
+          body: "This should guard missing value before dereference.",
+          author: { username: "bob" },
+          created_at: "2026-03-18T10:05:00Z",
+        },
+      ],
+    };
+
+    const { priorReviewSection } = buildMrSections(metadata);
+    expect(priorReviewSection).toContain("## Prior Review Feedback (GitHub)");
+    expect(priorReviewSection).toContain("REQUEST CHANGES");
+    expect(priorReviewSection).toContain("`src/review.ts`");
+    expect(priorReviewSection).not.toContain("alice");
+    expect(priorReviewSection).not.toContain("bob");
+  });
 });
 
 describe("normalizeLabelNames", () => {
   it("handles string labels", () => {
-    expect(normalizeLabelNames(["bug", "feature"])).toEqual([
-      "bug",
-      "feature",
-    ]);
+    expect(normalizeLabelNames(["bug", "feature"])).toEqual(["bug", "feature"]);
   });
 
   it("handles dict labels", () => {
-    expect(
-      normalizeLabelNames([{ name: "bug" }, { name: "feature" }]),
-    ).toEqual(["bug", "feature"]);
+    expect(normalizeLabelNames([{ name: "bug" }, { name: "feature" }])).toEqual(
+      ["bug", "feature"],
+    );
   });
 
   it("returns empty for null/undefined", () => {
@@ -80,9 +107,13 @@ describe("buildPrReviewPrompt", () => {
     expect(prompt).toContain("submit_review");
     expect(prompt).toContain("query_knowledge_base");
     expect(prompt).toContain("save_knowledge_base");
-    expect(prompt).toContain("Step 1c — Query durable prior knowledge (MANDATORY)");
+    expect(prompt).toContain(
+      "Step 1c — Query durable prior knowledge (MANDATORY)",
+    );
     expect(prompt).toContain("MUST call `query_knowledge_base` at least once");
-    expect(prompt).toContain("If no prior save happened, call `save_knowledge_base` at least once");
+    expect(prompt).toContain(
+      "If no prior save happened, call `save_knowledge_base` at least once",
+    );
     expect(prompt).toContain("pr_understanding");
     expect(prompt).toContain("change_summary");
     expect(prompt).toContain("analysis_scope");
@@ -95,7 +126,29 @@ describe("buildPrReviewPrompt", () => {
     expect(prompt).toContain("Do not save one-off implementation details");
     expect(prompt).toContain("final PR review comments/findings text");
     expect(prompt).toContain("Execution style constraints (MANDATORY)");
-    expect(prompt).toContain("Do not print the review as normal assistant text.");
+    expect(prompt).toContain(
+      "Do not print the review as normal assistant text.",
+    );
     expect(prompt).not.toContain("Output ONLY the raw JSON object");
+  });
+
+  it("injects prior review section placeholder when metadata exists", () => {
+    const prompt = buildPrReviewPrompt({
+      prUrl: "https://github.com/acme/hodor/pull/42",
+      platform: "github",
+      targetBranch: "main",
+      mrMetadata: {
+        reviewerSummaries: [
+          {
+            state: "APPROVED",
+            body: "Looks good overall.",
+            submitted_at: "2026-03-18T10:00:00Z",
+          },
+        ],
+      },
+    });
+
+    expect(prompt).toContain("## Prior Review Feedback (GitHub)");
+    expect(prompt).not.toContain("{prior_review_section}");
   });
 });
