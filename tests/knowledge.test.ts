@@ -74,6 +74,25 @@ describe("saveKnowledgeBase", () => {
     expect(result.ok).toBe(false);
   });
 
+  it("rejects PR verdict/judgment style learnings", async () => {
+    await createConfiguredKb();
+    const config = getKnowledgeBaseConfig();
+
+    const result = await saveKnowledgeBase(config, "acme/service-api", {
+      learning:
+        "In this PR, patch is incorrect and reviewer is right because this should be fixed before merge.",
+      category: "coding_pattern",
+      evidence:
+        "Observed in the review output and discussion thread where maintainability comments were raised.",
+      stability: "high",
+      scope_tags: ["review", "verdict"],
+    });
+
+    expect(result.status).toBe("rejected");
+    expect(result.ok).toBe(false);
+    expect(result.reason).toContain("judgment");
+  });
+
   it("deduplicates on matching fingerprint and updates observation count", async () => {
     const { configPath } = await createConfiguredKb();
     const config = getKnowledgeBaseConfig();

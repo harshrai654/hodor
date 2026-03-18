@@ -50,6 +50,10 @@ export const SUBMIT_REVIEW_SCHEMA = Type.Object(
     analysis_scope: Type.Optional(
       Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: 8 }),
     ),
+    prior_feedback_resolution: Type.Optional(
+      Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: 6 }),
+    ),
+    maintainability_assessment: Type.Optional(Type.String({ minLength: 1 })),
     confidence_notes: Type.Optional(
       Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: 6 }),
     ),
@@ -94,7 +98,15 @@ export function validateReviewOutput(review: ReviewOutput): ReviewOutput {
   validateBulletList("pr_understanding", review.pr_understanding);
   validateBulletList("change_summary", review.change_summary);
   validateBulletList("analysis_scope", review.analysis_scope);
+  validateBulletList("prior_feedback_resolution", review.prior_feedback_resolution);
   validateBulletList("confidence_notes", review.confidence_notes);
+
+  if (
+    review.maintainability_assessment != null
+    && review.maintainability_assessment.trim().length === 0
+  ) {
+    throw new Error("submit_review maintainability_assessment must be non-empty when provided");
+  }
 
   if (
     review.kb_question_closure != null
@@ -113,7 +125,12 @@ function getPriorityFromTitle(title: string): ReviewPriority | null {
 }
 
 function validateBulletList(
-  fieldName: "pr_understanding" | "change_summary" | "analysis_scope" | "confidence_notes",
+  fieldName:
+    | "pr_understanding"
+    | "change_summary"
+    | "analysis_scope"
+    | "prior_feedback_resolution"
+    | "confidence_notes",
   values: string[] | undefined,
 ): void {
   if (!values) return;

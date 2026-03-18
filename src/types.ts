@@ -104,6 +104,8 @@ export interface ReviewOutput {
   pr_understanding?: string[];
   change_summary?: string[];
   analysis_scope?: string[];
+  prior_feedback_resolution?: string[];
+  maintainability_assessment?: string;
   confidence_notes?: string[];
   kb_question_closure?: string;
 }

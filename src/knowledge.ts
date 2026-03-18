@@ -193,6 +193,36 @@ function isHighSignalCandidate(input: SaveKnowledgeInput): { accepted: boolean; 
   ) {
     return { accepted: false, reason: "learning appears incidental or non-durable" };
   }
+  const judgementalPatterns = [
+    "patch is incorrect",
+    "patch is correct",
+    "blocking issue",
+    "overall verdict",
+    "i agree",
+    "i disagree",
+    "reviewer is right",
+    "reviewer is wrong",
+    "should be fixed",
+    "this pr",
+    "in this pr",
+  ];
+  if (judgementalPatterns.some((pattern) => lowercaseLearning.includes(pattern))) {
+    return { accepted: false, reason: "learning appears to be a PR verdict/judgment, not a durable codebase fact" };
+  }
+
+  const factualSignalPatterns = [
+    "always",
+    "must",
+    "before",
+    "after",
+    "through",
+    "uses",
+    "returns",
+    "maps",
+  ];
+  if (!factualSignalPatterns.some((pattern) => lowercaseLearning.includes(pattern))) {
+    return { accepted: false, reason: "learning must express a durable behavioral/structural fact" };
+  }
   return { accepted: true };
 }
 

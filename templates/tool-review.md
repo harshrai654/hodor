@@ -249,15 +249,17 @@ When you are done, call `submit_review` exactly once with the final structured r
 Before final submission, complete a mandatory knowledge-capture step:
 
 1. Confirm all key knowledge questions raised earlier are now closed with evidence-backed answers from this review.
-2. Persist durable learnings incrementally during analysis whenever confidence is high (recommended 1-3 focused saves total when warranted).
-3. If no prior save happened, call `save_knowledge_base` at least once with the strongest reusable learning before `submit_review`.
-4. If a save is rejected by tool policy, refine to a higher-signal learning and try again once.
+2. Persist durable learnings incrementally during analysis whenever confidence is high (recommended 0-2 focused saves total when warranted).
+3. `save_knowledge_base` is OPTIONAL. Do not force a save just to satisfy process.
+4. If a save is rejected by tool policy, do not retry unless you found a materially different durable fact.
 
 Before calling `submit_review`, include concise context fields so authors can validate your understanding:
 
 - `pr_understanding`: 2-4 bullets on PR intent and scope
 - `change_summary`: 2-5 bullets of concrete behavior/code-path changes seen in diff
 - `analysis_scope`: 2-5 bullets listing what you reviewed and any notable exclusions
+- `prior_feedback_resolution`: required when prior review comments are provided; 1-3 bullets summarizing which earlier feedback you agree/disagree with and why
+- `maintainability_assessment`: required single sentence: either summarize high-signal maintainability concerns found, or explicitly state none were found
 - `confidence_notes` (optional): assumptions, uncertainty, or follow-up caveats
 - `kb_question_closure` (required if any `query_knowledge_base` call returned no matches): one evidence-backed sentence explaining how those open questions were resolved (or why no durable answer was found)
 
@@ -281,6 +283,8 @@ Only save when all are true:
 - You can cite concrete evidence from this review.
 - The learning is likely reusable in future PR reviews for the same repository.
 - Stability is at least medium.
+- The fact is not already captured by prior query results in this run (avoid duplicate/near-duplicate restatements).
+- The statement is a durable codebase fact (how code is structured/behaves), not a PR verdict, reviewer judgment, or issue commentary.
 
 Do not save one-off implementation details, speculative assumptions, temporary branch behavior, cosmetic/style observations, or final PR review comments/findings text.
 Prefer learnings with high reuse frequency that reduce future exploration effort in different PR contexts.
@@ -321,6 +325,8 @@ Valid `save_knowledge_base` example:
   "pr_understanding": ["<2-4 concise bullets>"],
   "change_summary": ["<2-5 concise bullets>"],
   "analysis_scope": ["<2-5 concise bullets>"],
+  "prior_feedback_resolution": ["<required when prior review comments exist: 1-3 concise bullets>"],
+  "maintainability_assessment": "<required single sentence; either concerns found or explicitly none>",
   "confidence_notes": ["<optional bullets>"],
   "kb_question_closure": "<required if any kb query had zero matches>"
 }

@@ -25,6 +25,12 @@ export function renderMarkdown(review: ReviewOutput, context?: RenderContext): s
   appendSection(lines, "PR Understanding", review.pr_understanding);
   appendSection(lines, "Change Summary", review.change_summary);
   appendSection(lines, "Scope & Assumptions", review.analysis_scope);
+  appendSection(lines, "Prior Feedback Resolution", review.prior_feedback_resolution);
+  if (review.maintainability_assessment?.trim()) {
+    lines.push("### Maintainability Assessment");
+    lines.push(`- ${review.maintainability_assessment.trim()}`);
+    lines.push("");
+  }
   appendSection(lines, "Confidence Notes", review.confidence_notes);
   if (review.kb_question_closure?.trim()) {
     lines.push("### Knowledge Closure");

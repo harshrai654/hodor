@@ -115,6 +115,30 @@ export function parsePrUrl(prUrl: string): ParsedPrUrl {
   );
 }
 
+function normalizeLearningText(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isNearDuplicateLearning(candidate: string, existing: string): boolean {
+  if (!candidate || !existing) return false;
+  if (candidate === existing) return true;
+
+  const candidateTokens = new Set(candidate.split(" ").filter((token) => token.length > 2));
+  const existingTokens = new Set(existing.split(" ").filter((token) => token.length > 2));
+  if (candidateTokens.size === 0 || existingTokens.size === 0) return false;
+
+  let overlap = 0;
+  for (const token of candidateTokens) {
+    if (existingTokens.has(token)) overlap++;
+  }
+  const minSize = Math.min(candidateTokens.size, existingTokens.size);
+  return overlap / minSize >= 0.8;
+}
+
 export async function postReviewComment(opts: {
   prUrl: string;
   reviewText: string;
@@ -401,7 +425,12 @@ export async function reviewPr(opts: {
     let submittedReview: ReviewOutput | null = null;
     let kbQueryCalls = 0;
     let kbNoMatchResponses = 0;
+    const kbMatchedLearningCorpus = new Set<string>();
     let submitReviewCalls = 0;
+    const hasPriorReviewFeedback = Boolean(
+      (mrMetadata?.reviewerSummaries?.length ?? 0) > 0
+      || (mrMetadata?.inlineReviewComments?.length ?? 0) > 0,
+    );
     const submitReviewTool: ToolDefinition = {
       name: "submit_review",
       label: "Submit Review",
@@ -455,6 +484,36 @@ export async function reviewPr(opts: {
               reason: "missing kb_question_closure after no-match knowledge queries",
               kbQueryCalls,
               kbNoMatchResponses,
+            },
+          };
+        }
+
+        if (hasPriorReviewFeedback && (!candidate.prior_feedback_resolution || candidate.prior_feedback_resolution.length === 0)) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: "submit_review requires `prior_feedback_resolution` because prior review comments were provided. Add 1-3 bullets on where earlier feedback is correct/incorrect and why.",
+              },
+            ],
+            details: {
+              ok: false,
+              reason: "missing prior_feedback_resolution",
+            },
+          };
+        }
+
+        if (!candidate.maintainability_assessment?.trim()) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: "submit_review requires `maintainability_assessment` as one concise sentence (either concerns found, or explicitly none).",
+              },
+            ],
+            details: {
+              ok: false,
+              reason: "missing maintainability_assessment",
             },
           };
         }
@@ -524,6 +583,10 @@ export async function reviewPr(opts: {
               `${index + 1}. [${match.category}] ${match.learning} (confidence: ${match.confidence})`,
           )
           .join("\n");
+        for (const match of result.matches) {
+          const normalized = normalizeLearningText(match.learning);
+          if (normalized) kbMatchedLearningCorpus.add(normalized);
+        }
         return {
           content: [
             {
@@ -543,23 +606,58 @@ export async function reviewPr(opts: {
         "Persist a high-signal learning. Category must be architecture, coding_pattern, service_call_chain, or fundamental_design.",
       parameters: SAVE_KNOWLEDGE_BASE_SCHEMA,
       execute: async (_toolCallId, params, _signal, _onUpdate, _ctx) => {
+        const candidate = params as {
+          learning: string;
+          category:
+            | "architecture"
+            | "coding_pattern"
+            | "service_call_chain"
+            | "fundamental_design";
+          evidence: string;
+          stability: "low" | "medium" | "high";
+          scope_tags: string[];
+          paths?: string[];
+          symbols?: string[];
+          source_pr?: string;
+        };
+        const normalizedCandidateLearning = normalizeLearningText(candidate.learning);
+        if (normalizedCandidateLearning && kbMatchedLearningCorpus.has(normalizedCandidateLearning)) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: "save_knowledge_base skipped: learning duplicates prior matched knowledge from this run.",
+              },
+            ],
+            details: {
+              ok: false,
+              status: "rejected",
+              reason: "duplicate of prior matched knowledge",
+            },
+          };
+        }
+        for (const priorLearning of kbMatchedLearningCorpus) {
+          if (isNearDuplicateLearning(normalizedCandidateLearning, priorLearning)) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: "save_knowledge_base skipped: learning is too similar to prior matched knowledge from this run.",
+                },
+              ],
+              details: {
+                ok: false,
+                status: "rejected",
+                reason: "near-duplicate of prior matched knowledge",
+              },
+            };
+          }
+        }
+
         const result = await saveKnowledgeBase(
           knowledgeBaseConfig,
           targetRepo,
-          params as {
-            learning: string;
-            category:
-              | "architecture"
-              | "coding_pattern"
-              | "service_call_chain"
-              | "fundamental_design";
-            evidence: string;
-            stability: "low" | "medium" | "high";
-            scope_tags: string[];
-            paths?: string[];
-            symbols?: string[];
-            source_pr?: string;
-          },
+          candidate,
         );
         if (!result.ok) {
           return {
