@@ -61,4 +61,40 @@ describe("renderMarkdown", () => {
     expect(md).toContain("`src/db.ts:12-15`");
     expect(md).toContain("`src/models.ts:89`");
   });
+
+  test("renders optional sections and location links when context exists", () => {
+    const review: ReviewOutput = {
+      findings: [
+        {
+          title: "[P1] Null check missing",
+          body: "This path can dereference undefined.",
+          priority: 1,
+          code_location: {
+            absolute_file_path: "/home/runner/work/backend/backend/server/api/service.js",
+            line_range: { start: 53, end: 58 },
+          },
+        },
+      ],
+      overall_correctness: "patch is incorrect",
+      overall_explanation: "A production crash path remains.",
+      pr_understanding: ["Adds new cohort matching functions and resolver paths."],
+      change_summary: ["Introduces global cohort calculations based on gains/losses."],
+      analysis_scope: ["Reviewed all changed service/factory files and tests."],
+      kb_question_closure:
+        "No KB matches existed; resolved by tracing factory-to-service usage in current diff.",
+    };
+
+    const md = renderMarkdown(review, {
+      platform: "github",
+      repoUrl: "https://github.com/acme/backend",
+      sourceRef: "feature/new-cohorts",
+    });
+    expect(md).toContain("### PR Understanding");
+    expect(md).toContain("### Change Summary");
+    expect(md).toContain("### Scope & Assumptions");
+    expect(md).toContain("### Knowledge Closure");
+    expect(md).toContain(
+      "[server/api/service.js:53-58](https://github.com/acme/backend/blob/feature%2Fnew-cohorts/server/api/service.js#L53-L58)",
+    );
+  });
 });

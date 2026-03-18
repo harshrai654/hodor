@@ -10,6 +10,7 @@ Hodor performs automated, in-depth code reviews by running as a stateful agent w
 - **Sandboxed**: Each review runs in an isolated, temporary workspace.
 - **Context-aware**: Uses repository-specific "Skills" to enforce conventions.
 - **CI-Native**: Optimizes execution when running in GitHub Actions or GitLab CI.
+- **Reviewer-grounded output**: Posts structured markdown with PR understanding, change summary, and optional source line links when context is available.
 - **Observability**: Provides detailed logs, token usage, and cost estimates.
 
 ---

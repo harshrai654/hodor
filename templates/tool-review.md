@@ -62,6 +62,12 @@ The `+new_start` value is the first new-file line number in that hunk. Count for
 | `save_knowledge_base` | Persist high-signal durable learnings as soon as they become high-confidence (not only at the end) |
 | `submit_review` | Submit the final structured review |
 
+**Execution style constraints (MANDATORY):**
+
+- Keep tool-call narration terse and factual (1 sentence max); avoid motivational or conversational filler.
+- Do not repeat the same plan each turn. State only the next concrete action.
+- Prefer batched or scoped commands over exploratory loops when possible.
+
 ---
 
 ## Review Process
@@ -225,6 +231,14 @@ Before final submission, complete a mandatory knowledge-capture step:
 3. If no prior save happened, call `save_knowledge_base` at least once with the strongest reusable learning before `submit_review`.
 4. If a save is rejected by tool policy, refine to a higher-signal learning and try again once.
 
+Before calling `submit_review`, include concise context fields so authors can validate your understanding:
+
+- `pr_understanding`: 2-4 bullets on PR intent and scope
+- `change_summary`: 2-5 bullets of concrete behavior/code-path changes seen in diff
+- `analysis_scope`: 2-5 bullets listing what you reviewed and any notable exclusions
+- `confidence_notes` (optional): assumptions, uncertainty, or follow-up caveats
+- `kb_question_closure` (required if any `query_knowledge_base` call returned no matches): one evidence-backed sentence explaining how those open questions were resolved (or why no durable answer was found)
+
 Allowed `save_knowledge_base` categories (use exactly one):
 
 - `architecture`: core system boundaries, invariants, or fundamental design constraints
@@ -281,7 +295,12 @@ Valid `save_knowledge_base` example:
     }
   ],
   "overall_correctness": "patch is correct" | "patch is incorrect",
-  "overall_explanation": "<1-3 sentence explanation justifying the verdict>"
+  "overall_explanation": "<1-3 sentence explanation justifying the verdict>",
+  "pr_understanding": ["<2-4 concise bullets>"],
+  "change_summary": ["<2-5 concise bullets>"],
+  "analysis_scope": ["<2-5 concise bullets>"],
+  "confidence_notes": ["<optional bullets>"],
+  "kb_question_closure": "<required if any kb query had zero matches>"
 }
 ```
 

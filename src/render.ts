@@ -2,12 +2,12 @@
  * Render structured review output into clean markdown for PR/MR comments.
  */
 
-import type { ReviewFinding, ReviewOutput } from "./types.js";
+import type { RenderContext, ReviewFinding, ReviewOutput } from "./types.js";
 
 /**
  * Render a ReviewOutput into clean markdown for posting as a PR/MR comment.
  */
-export function renderMarkdown(review: ReviewOutput): string {
+export function renderMarkdown(review: ReviewOutput, context?: RenderContext): string {
   const lines: string[] = [];
 
   // Group findings by priority
@@ -22,6 +22,16 @@ export function renderMarkdown(review: ReviewOutput): string {
     else minor.push(f);
   }
 
+  appendSection(lines, "PR Understanding", review.pr_understanding);
+  appendSection(lines, "Change Summary", review.change_summary);
+  appendSection(lines, "Scope & Assumptions", review.analysis_scope);
+  appendSection(lines, "Confidence Notes", review.confidence_notes);
+  if (review.kb_question_closure?.trim()) {
+    lines.push("### Knowledge Closure");
+    lines.push(`- ${review.kb_question_closure.trim()}`);
+    lines.push("");
+  }
+
   lines.push("### Issues Found");
   lines.push("");
 
@@ -33,7 +43,7 @@ export function renderMarkdown(review: ReviewOutput): string {
   if (critical.length > 0) {
     lines.push("**Critical (P0/P1)**");
     for (const f of critical) {
-      lines.push(formatFinding(f));
+      lines.push(formatFinding(f, context));
     }
     lines.push("");
   }
@@ -41,7 +51,7 @@ export function renderMarkdown(review: ReviewOutput): string {
   if (important.length > 0) {
     lines.push("**Important (P2)**");
     for (const f of important) {
-      lines.push(formatFinding(f));
+      lines.push(formatFinding(f, context));
     }
     lines.push("");
   }
@@ -49,7 +59,7 @@ export function renderMarkdown(review: ReviewOutput): string {
   if (minor.length > 0) {
     lines.push("**Minor (P3)**");
     for (const f of minor) {
-      lines.push(formatFinding(f));
+      lines.push(formatFinding(f, context));
     }
     lines.push("");
   }
@@ -75,8 +85,17 @@ export function renderMarkdown(review: ReviewOutput): string {
   return lines.join("\n").trimEnd() + "\n";
 }
 
-function formatFinding(f: ReviewFinding): string {
-  const loc = ` (\`${formatLocation(f.code_location)}\`)`;
+function appendSection(lines: string[], title: string, items: string[] | undefined): void {
+  if (!items || items.length === 0) return;
+  lines.push(`### ${title}`);
+  for (const item of items) {
+    lines.push(`- ${item}`);
+  }
+  lines.push("");
+}
+
+function formatFinding(f: ReviewFinding, context?: RenderContext): string {
+  const loc = ` (${formatLocation(f.code_location, context)})`;
   const title = `- **${f.title}**${loc}`;
   const body = `  - ${f.body}`;
   return `${title}\n${body}`;
@@ -85,9 +104,17 @@ function formatFinding(f: ReviewFinding): string {
 function formatLocation(loc: {
   absolute_file_path: string;
   line_range: { start: number; end: number };
-}): string {
+}, context?: RenderContext): string {
+  const relativePath = toRelativePath(loc.absolute_file_path);
+  const { start, end } = loc.line_range;
+  const label = start === end ? `${relativePath}:${start}` : `${relativePath}:${start}-${end}`;
+  const href = buildLocationUrl(context, relativePath, start, end);
+  return href ? `[${label}](${href})` : `\`${label}\``;
+}
+
+function toRelativePath(absolutePath: string): string {
   // Strip common workspace prefixes to get a clean relative path
-  let filePath = loc.absolute_file_path;
+  let filePath = absolutePath;
 
   // GitLab CI: /builds/owner/repo/src/file.ts → src/file.ts
   const buildsMatch = filePath.match(/\/builds\/[^/]+\/[^/]+\/(.+)/);
@@ -98,11 +125,39 @@ function formatLocation(loc: {
   else if (filePath.includes("/workspace/")) {
     filePath = filePath.slice(filePath.indexOf("/workspace/") + "/workspace/".length);
   }
-  // Temp review dirs: /tmp/hodor-review-<id>/src/file.ts → src/file.ts
+  // GitHub Actions hosted runners: /home/runner/work/repo/repo/src/file.ts → src/file.ts
   else {
-    filePath = filePath.replace(/^.*\/hodor-review-[^/]+\//, "");
+    const ghaMatch = filePath.match(/\/home\/runner\/work\/[^/]+\/[^/]+\/(.+)/);
+    if (ghaMatch) {
+      filePath = ghaMatch[1];
+    } else {
+      // Temp review dirs: /tmp/hodor-review-<id>/src/file.ts → src/file.ts
+      filePath = filePath.replace(/^.*\/hodor-review-[^/]+\//, "");
+    }
   }
 
-  const { start, end } = loc.line_range;
-  return start === end ? `${filePath}:${start}` : `${filePath}:${start}-${end}`;
+  return filePath;
+}
+
+function buildLocationUrl(
+  context: RenderContext | undefined,
+  relativePath: string,
+  start: number,
+  end: number,
+): string | null {
+  if (!context?.repoUrl || !context.sourceRef) return null;
+  const encodedPath = relativePath
+    .split("/")
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
+  const encodedRef = encodeURIComponent(context.sourceRef);
+  const anchor = start === end ? `#L${start}` : `#L${start}-L${end}`;
+
+  if (context.platform === "github") {
+    return `${context.repoUrl}/blob/${encodedRef}/${encodedPath}${anchor}`;
+  }
+  if (context.platform === "gitlab") {
+    return `${context.repoUrl}/-/blob/${encodedRef}/${encodedPath}${anchor}`;
+  }
+  return null;
 }

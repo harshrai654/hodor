@@ -27,6 +27,17 @@ describe("validateReviewOutput", () => {
     expect(validateReviewOutput(review)).toEqual(review);
   });
 
+  test("accepts optional context sections", () => {
+    const review = makeReview({
+      pr_understanding: ["Adds integration cohort evaluation flow for recalculation."],
+      change_summary: ["Introduces new cohort matching factory and constants."],
+      analysis_scope: ["Reviewed service and factory diffs plus tests."],
+      confidence_notes: ["No unresolved edge-case assumptions remain."],
+      kb_question_closure: "No prior KB matches; behavior was resolved by validating service call flow and tests in this PR diff.",
+    });
+    expect(validateReviewOutput(review)).toEqual(review);
+  });
+
   test("rejects mismatched title and numeric priority", () => {
     const review = makeReview({
       findings: [
@@ -84,6 +95,15 @@ describe("validateReviewOutput", () => {
 
     expect(() => validateReviewOutput(review)).toThrow(
       "submit_review finding 1 code_location line_range start must be <= end",
+    );
+  });
+
+  test("rejects empty kb_question_closure when provided", () => {
+    const review = makeReview({
+      kb_question_closure: "   ",
+    });
+    expect(() => validateReviewOutput(review)).toThrow(
+      "submit_review kb_question_closure must be non-empty when provided",
     );
   });
 });

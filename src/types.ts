@@ -66,6 +66,17 @@ export interface ReviewOutput {
   findings: ReviewFinding[];
   overall_correctness: ReviewCorrectness;
   overall_explanation: string;
+  pr_understanding?: string[];
+  change_summary?: string[];
+  analysis_scope?: string[];
+  confidence_notes?: string[];
+  kb_question_closure?: string;
+}
+
+export interface RenderContext {
+  platform: Platform;
+  repoUrl: string;
+  sourceRef?: string;
 }
 
 export interface PostCommentResult {

@@ -190,7 +190,7 @@ program
       log();
 
       streamLog(chalk.dim("▶ Setting up workspace..."));
-      const { review, metricsFooter } = await reviewPr({
+      const { review, metricsFooter, renderContext } = await reviewPr({
         prUrl,
         model,
         reasoningEffort,
@@ -201,7 +201,7 @@ program
         includeMetricsFooter: post,
         onEvent: handleEvent,
       });
-      const reviewText = renderMarkdown(review);
+      const reviewText = renderMarkdown(review, renderContext);
 
       streamLog(chalk.green("✔ Review complete!"));
 

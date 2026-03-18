@@ -25,6 +25,7 @@ import type {
   ReviewMetrics,
   PostCommentResult,
   MrMetadata,
+  RenderContext,
   ReviewOutput,
 } from "./types.js";
 
@@ -189,7 +190,7 @@ export async function reviewPr(opts: {
   workspaceDir?: string | null;
   includeMetricsFooter?: boolean;
   onEvent?: (event: AgentProgressEvent) => void;
-}): Promise<{ review: ReviewOutput; metricsFooter: string | null }> {
+}): Promise<{ review: ReviewOutput; metricsFooter: string | null; renderContext: RenderContext }> {
   const {
     prUrl,
     model = "anthropic/claude-sonnet-4-5-20250929",
@@ -398,6 +399,8 @@ export async function reviewPr(opts: {
     }
 
     let submittedReview: ReviewOutput | null = null;
+    let kbQueryCalls = 0;
+    let kbNoMatchResponses = 0;
     let submitReviewCalls = 0;
     const submitReviewTool: ToolDefinition = {
       name: "submit_review",
@@ -422,7 +425,41 @@ export async function reviewPr(opts: {
           };
         }
 
-        submittedReview = validateReviewOutput(params as ReviewOutput);
+        let candidate: ReviewOutput;
+        try {
+          candidate = validateReviewOutput(params as ReviewOutput);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          logger.warn(`Rejected submit_review payload: ${message}`);
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Invalid submit_review payload: ${message}. Fix the payload and call submit_review again once.`,
+              },
+            ],
+            details: { ok: false, reason: message },
+          };
+        }
+
+        if (kbQueryCalls > 0 && kbNoMatchResponses > 0 && !candidate.kb_question_closure?.trim()) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: "submit_review requires `kb_question_closure` because earlier `query_knowledge_base` calls returned no matches. Add an evidence-backed closure note and call submit_review again.",
+              },
+            ],
+            details: {
+              ok: false,
+              reason: "missing kb_question_closure after no-match knowledge queries",
+              kbQueryCalls,
+              kbNoMatchResponses,
+            },
+          };
+        }
+
+        submittedReview = candidate;
         logger.info(
           `Received structured review via submit_review (${submittedReview.findings.length} finding(s))`,
         );
@@ -445,6 +482,7 @@ export async function reviewPr(opts: {
         "Search persisted review learnings for architecture, call chains, and durable patterns.",
       parameters: QUERY_KNOWLEDGE_BASE_SCHEMA,
       execute: async (_toolCallId, params, _signal, _onUpdate, _ctx) => {
+        kbQueryCalls++;
         const result = await queryKnowledgeBase(
           knowledgeBaseConfig,
           targetRepo,
@@ -468,6 +506,7 @@ export async function reviewPr(opts: {
         }
 
         if (result.matches.length === 0) {
+          kbNoMatchResponses++;
           return {
             content: [
               {
@@ -762,7 +801,14 @@ export async function reviewPr(opts: {
       metricsFooter = formatMetricsMarkdown(metrics);
     }
 
-    return { review, metricsFooter };
+    const repoUrl = `https://${host}/${owner}/${repo}`;
+    const renderContext: RenderContext = {
+      platform,
+      repoUrl,
+      sourceRef: mrMetadata?.source_branch,
+    };
+
+    return { review, metricsFooter, renderContext };
   } finally {
     // Restore mutated env vars
     for (const [key, val] of Object.entries(envSnapshot)) {

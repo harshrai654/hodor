@@ -41,6 +41,19 @@ export const SUBMIT_REVIEW_SCHEMA = Type.Object(
       Type.Literal("patch is incorrect"),
     ]),
     overall_explanation: Type.String({ minLength: 1 }),
+    pr_understanding: Type.Optional(
+      Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: 6 }),
+    ),
+    change_summary: Type.Optional(
+      Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: 8 }),
+    ),
+    analysis_scope: Type.Optional(
+      Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: 8 }),
+    ),
+    confidence_notes: Type.Optional(
+      Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: 6 }),
+    ),
+    kb_question_closure: Type.Optional(Type.String({ minLength: 1 })),
   },
   { additionalProperties: false },
 );
@@ -78,6 +91,18 @@ export function validateReviewOutput(review: ReviewOutput): ReviewOutput {
     }
   }
 
+  validateBulletList("pr_understanding", review.pr_understanding);
+  validateBulletList("change_summary", review.change_summary);
+  validateBulletList("analysis_scope", review.analysis_scope);
+  validateBulletList("confidence_notes", review.confidence_notes);
+
+  if (
+    review.kb_question_closure != null
+    && review.kb_question_closure.trim().length === 0
+  ) {
+    throw new Error("submit_review kb_question_closure must be non-empty when provided");
+  }
+
   return review;
 }
 
@@ -85,4 +110,16 @@ function getPriorityFromTitle(title: string): ReviewPriority | null {
   const match = title.match(/^\[(P[0-3])\]/);
   if (!match) return null;
   return REVIEW_PRIORITY_TAGS.get(`[${match[1]}]`) ?? null;
+}
+
+function validateBulletList(
+  fieldName: "pr_understanding" | "change_summary" | "analysis_scope" | "confidence_notes",
+  values: string[] | undefined,
+): void {
+  if (!values) return;
+  for (const [index, value] of values.entries()) {
+    if (value.trim().length === 0) {
+      throw new Error(`submit_review ${fieldName}[${index}] must be non-empty`);
+    }
+  }
 }
