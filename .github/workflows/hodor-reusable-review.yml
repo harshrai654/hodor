@@ -90,21 +90,64 @@ jobs:
           fetch-depth: 0
           ref: ${{ steps.pr.outputs.head_sha }}
 
+      - name: Fetch base branch reference
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin \
+            "+refs/heads/${{ steps.pr.outputs.base_ref }}:refs/remotes/origin/${{ steps.pr.outputs.base_ref }}"
+
       - name: Install GitHub CLI
         run: |
           # GitHub CLI should already be available in ubuntu-latest
           gh --version
 
+      - name: Resolve inspect main SHA
+        id: inspect_sha
+        run: |
+          set -euo pipefail
+          inspect_sha="$(git ls-remote https://github.com/Ataraxy-Labs/inspect refs/heads/main | awk '{print $1}')"
+          if [ -z "${inspect_sha}" ]; then
+            echo "Failed to resolve inspect main SHA"
+            exit 1
+          fi
+          echo "sha=${inspect_sha}" >> "${GITHUB_OUTPUT}"
+          echo "INSPECT_GIT_SHA=${inspect_sha}" >> "${GITHUB_ENV}"
+
+      - name: Restore inspect binary cache
+        id: inspect_bin_cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/bin/inspect
+          key: inspect-${{ runner.os }}-${{ steps.inspect_sha.outputs.sha }}
+
       - name: Set up Rust toolchain
+        if: steps.inspect_bin_cache.outputs.cache-hit != 'true'
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Rust dependencies
+        if: steps.inspect_bin_cache.outputs.cache-hit != 'true'
         uses: Swatinem/rust-cache@v2
 
-      - name: Install inspect CLI
+      - name: Build inspect CLI
+        if: steps.inspect_bin_cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
-          cargo install --git https://github.com/Ataraxy-Labs/inspect inspect-cli
+          cargo install \
+            --git https://github.com/Ataraxy-Labs/inspect \
+            --rev "${INSPECT_GIT_SHA}" \
+            --locked \
+            --root /tmp/inspect-root \
+            inspect-cli
+          mkdir -p ~/.local/bin
+          cp /tmp/inspect-root/bin/inspect ~/.local/bin/inspect
+          chmod +x ~/.local/bin/inspect
+
+      - name: Add inspect to PATH
+        run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Verify inspect CLI
+        run: |
+          set -euo pipefail
           inspect -h
 
       - name: Set up Bun
@@ -136,7 +179,8 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_BASE_REF: ${{ steps.pr.outputs.base_ref }}
+          # Do not rely on overriding GITHUB_* vars from workflow env.
+          HODOR_BASE_REF: ${{ steps.pr.outputs.base_ref }}
           HODOR_KB_REPO: ${{ inputs.kb_repo }}
           HODOR_KB_BRANCH: ${{ inputs.kb_branch }}
           HODOR_KB_GITHUB_TOKEN: ${{ secrets.HODOR_KB_GITHUB_TOKEN }}

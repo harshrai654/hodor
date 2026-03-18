@@ -51,7 +51,12 @@ function detectCiWorkspace(owner: string, repo: string): CiWorkspace {
   if (process.env.GITHUB_ACTIONS === "true") {
     const workspaceDir = process.env.GITHUB_WORKSPACE;
     const repository = process.env.GITHUB_REPOSITORY;
-    const baseRef = process.env.GITHUB_BASE_REF ?? null;
+    // issue_comment workflows often don't expose GITHUB_BASE_REF reliably.
+    // Allow explicit override from wrapper workflows.
+    const baseRef =
+      process.env.GITHUB_BASE_REF?.trim() ||
+      process.env.HODOR_BASE_REF?.trim() ||
+      null;
 
     if (workspaceDir && repository) {
       const expected = `${owner}/${repo}`;
