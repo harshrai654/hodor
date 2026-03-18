@@ -77,8 +77,23 @@ jobs:
           pr_json="$(gh api "/repos/${REPO_NAME}/pulls/${PR_NUMBER}")"
           is_fork="$(echo "${pr_json}" | jq -r '.head.repo.fork')"
           head_repo="$(echo "${pr_json}" | jq -r '.head.repo.full_name')"
+          base_ref="$(echo "${pr_json}" | jq -r '.base.ref')"
+          head_sha="$(echo "${pr_json}" | jq -r '.head.sha')"
           echo "is_fork=${is_fork}" >> "${GITHUB_OUTPUT}"
           echo "head_repo=${head_repo}" >> "${GITHUB_OUTPUT}"
+          echo "base_ref=${base_ref}" >> "${GITHUB_OUTPUT}"
+          echo "head_sha=${head_sha}" >> "${GITHUB_OUTPUT}"
+
+      - name: Checkout PR head commit
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ steps.pr.outputs.head_sha }}
+
+      - name: Install GitHub CLI
+        run: |
+          # GitHub CLI should already be available in ubuntu-latest
+          gh --version
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -121,6 +136,7 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_BASE_REF: ${{ steps.pr.outputs.base_ref }}
           HODOR_KB_REPO: ${{ inputs.kb_repo }}
           HODOR_KB_BRANCH: ${{ inputs.kb_branch }}
           HODOR_KB_GITHUB_TOKEN: ${{ secrets.HODOR_KB_GITHUB_TOKEN }}
