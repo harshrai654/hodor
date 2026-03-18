@@ -1,12 +1,11 @@
-<a href="https://zerodha.tech"><img src="https://zerodha.tech/static/images/github-badge.svg" align="right" /></a>
-
-# Hodor
+# Hodor (KoinX-Tech fork from mr-karan/hodor)
 
 > An agentic code reviewer for GitHub and GitLab pull requests, powered by the [pi-coding-agent](https://github.com/badlogic/pi-mono) SDK.
 
 Hodor performs automated, in-depth code reviews by running as a stateful agent with a reasoning-action loop. It can analyze code, run commands, and provide context-aware feedback.
 
 **Features:**
+
 - **Cross-platform**: Works with GitHub and GitLab (cloud and self-hosted).
 - **Sandboxed**: Each review runs in an isolated, temporary workspace.
 - **Context-aware**: Uses repository-specific "Skills" to enforce conventions.
@@ -20,12 +19,15 @@ Hodor performs automated, in-depth code reviews by running as a stateful agent w
 Unlike simple LLM-prompting tools, Hodor uses the pi-coding-agent SDK to operate as an agent that can reason and act.
 
 ### Autonomous Decision Making
+
 - **Planning**: The agent analyzes the PR and creates an execution plan.
 - **Tool Selection**: It chooses appropriate tools (`grep`, file read, `git diff`) based on the context.
 - **Iterative Refinement**: It observes results, adapts its strategy, and retries on failures. The agent decides what to inspect and in what order, rather than following a hardcoded workflow.
 
 ### Tool Orchestration
+
 The agent has access to:
+
 - **Bash**: Execute shell commands (`git`, `grep`, test runners).
 - **File Operations**: Read, search, and analyze source code.
 - **Grep / Find / Ls**: Fast file discovery and pattern matching.
@@ -34,13 +36,13 @@ The agent decides which tools to use and when, not just following a script.
 
 ### Comparison
 
-| Traditional Static Analysis | Hodor (Agentic Review) |
-|-----------------------------|------------------------|
-| Single LLM call with full diff | Multi-step reasoning with tool feedback |
-| Fixed prompts, no adaptation | Dynamic strategy based on observations |
+| Traditional Static Analysis          | Hodor (Agentic Review)                           |
+| ------------------------------------ | ------------------------------------------------ |
+| Single LLM call with full diff       | Multi-step reasoning with tool feedback          |
+| Fixed prompts, no adaptation         | Dynamic strategy based on observations           |
 | Shallow analysis (no code execution) | Can run tests, check builds, and verify behavior |
-| Manual tool integration | Autonomous tool selection and orchestration |
-| No memory between steps | Stateful execution with event history |
+| Manual tool integration              | Autonomous tool selection and orchestration      |
+| No memory between steps              | Stateful execution with event history            |
 
 **Result**: Hodor can identify issues that require multi-step analysis, such as race conditions, integration problems, and security vulnerabilities, going beyond simple style checks.
 
@@ -82,6 +84,7 @@ bun run dist/cli.js https://github.com/owner/repo/pull/123 --verbose
 ```
 
 **Docker Alternative:**
+
 ```bash
 docker pull ghcr.io/mr-karan/hodor:latest
 docker run --rm \
@@ -96,6 +99,7 @@ docker run --rm \
 ## Skills: Repository-Specific Context
 
 Hodor uses the upstream pi-coding-agent skills format (`agentskills.io`). Skills are discovered from `.pi/skills` or `.hodor/skills` and loaded on demand, such as:
+
 - Coding conventions (naming, patterns, anti-patterns)
 - Security requirements (auth checks, input validation)
 - Performance expectations (latency budgets, memory limits)
@@ -104,11 +108,13 @@ Hodor uses the upstream pi-coding-agent skills format (`agentskills.io`). Skills
 ### How to Use Skills
 
 **1. Create a skill directory:**
+
 ```bash
 mkdir -p .pi/skills/review-guidelines
 ```
 
 **2. Add a skill file (`.pi/skills/review-guidelines/SKILL.md`):**
+
 ```markdown
 ---
 name: review-guidelines
@@ -116,11 +122,13 @@ description: Project-specific review checklist for security, performance, and te
 ---
 
 ## Security
+
 - All API endpoints must have authentication checks.
 - User input MUST be validated and sanitized.
 - Never log sensitive data (passwords, tokens, PII).
 
 ## Performance
+
 - Database queries must have indexes.
 - API responses should be < 200ms p95.
 - Avoid N+1 queries in loops.
@@ -128,9 +136,11 @@ description: Project-specific review checklist for security, performance, and te
 
 **3. Run review with skills:**
 The agent will automatically discover skills from `.pi/skills/` or `.hodor/skills/` in the reviewed repository and read matching skills on demand.
+
 ```bash
 bun run dist/cli.js <PR_URL> --workspace . --verbose
 ```
+
 Use `--verbose` to see discovered skills and diagnostics.
 
 See [SKILLS.md](./docs/SKILLS.md) for detailed examples and patterns.
@@ -228,9 +238,9 @@ The reusable workflow installs `inspect` through Cargo and runs `inspect --versi
 ```yaml
 # .gitlab-ci.yml
 include:
-  - project: 'commons/gitlab-templates'
+  - project: "commons/gitlab-templates"
     ref: master
-    file: '/hodor/.gitlab-ci-template.yml'
+    file: "/hodor/.gitlab-ci-template.yml"
 
 hodor-review:
   extends: .hodor-review
@@ -242,36 +252,37 @@ See [AUTOMATED_REVIEWS.md](./docs/AUTOMATED_REVIEWS.md) for advanced workflows.
 
 ## Configuration
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--model` | `anthropic/claude-sonnet-4-5-20250929` | LLM model to use. Supports Anthropic, OpenAI, and AWS Bedrock. |
-| `--reasoning-effort` | None | Enable extended thinking (`low`, `medium`, `high`). |
-| `--ultrathink` | Off | Maximum reasoning effort with extended thinking budget. |
-| `--prompt` | – | Append custom instructions to the base prompt. |
-| `--prompt-file` | – | Replace base prompt with a custom markdown file. |
-| `--workspace` | Temp dir | Directory for repo checkout. Re-use for faster multi-PR reviews. |
-| `--post` | Off | Auto-post review comment to GitHub/GitLab. |
-| `--verbose` | Off | Stream agent events in real-time. |
+| Flag                 | Default                                | Description                                                      |
+| -------------------- | -------------------------------------- | ---------------------------------------------------------------- |
+| `--model`            | `anthropic/claude-sonnet-4-5-20250929` | LLM model to use. Supports Anthropic, OpenAI, and AWS Bedrock.   |
+| `--reasoning-effort` | None                                   | Enable extended thinking (`low`, `medium`, `high`).              |
+| `--ultrathink`       | Off                                    | Maximum reasoning effort with extended thinking budget.          |
+| `--prompt`           | –                                      | Append custom instructions to the base prompt.                   |
+| `--prompt-file`      | –                                      | Replace base prompt with a custom markdown file.                 |
+| `--workspace`        | Temp dir                               | Directory for repo checkout. Re-use for faster multi-PR reviews. |
+| `--post`             | Off                                    | Auto-post review comment to GitHub/GitLab.                       |
+| `--verbose`          | Off                                    | Stream agent events in real-time.                                |
 
 **Environment Variables**
 
-| Variable | Purpose | Required |
-|----------|---------|----------|
-| `ANTHROPIC_API_KEY` | Claude API key | For Anthropic models |
-| `OPENAI_API_KEY` | OpenAI API key | For OpenAI models |
-| `LLM_API_KEY` | Generic fallback API key (used when provider-specific key is not set) | Optional |
-| `GITHUB_TOKEN` / `GITLAB_TOKEN` | Post comments to PRs/MRs | Only with `--post` |
-| `GITLAB_PRIVATE_TOKEN` | Alternative GitLab token name (checked after `GITLAB_TOKEN`) | Optional |
-| `GITLAB_HOST` | Self-hosted GitLab instance (auto-detected from MR URL) | Optional |
-| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | AWS Bedrock authentication | For `bedrock/` models |
-| `AWS_REGION` / `AWS_DEFAULT_REGION` | AWS region for Bedrock (e.g., `ap-south-1`) | For `bedrock/` models |
-| `AWS_PROFILE` | AWS profile name (alternative to access keys) | For `bedrock/` models |
+| Variable                                      | Purpose                                                               | Required              |
+| --------------------------------------------- | --------------------------------------------------------------------- | --------------------- |
+| `ANTHROPIC_API_KEY`                           | Claude API key                                                        | For Anthropic models  |
+| `OPENAI_API_KEY`                              | OpenAI API key                                                        | For OpenAI models     |
+| `LLM_API_KEY`                                 | Generic fallback API key (used when provider-specific key is not set) | Optional              |
+| `GITHUB_TOKEN` / `GITLAB_TOKEN`               | Post comments to PRs/MRs                                              | Only with `--post`    |
+| `GITLAB_PRIVATE_TOKEN`                        | Alternative GitLab token name (checked after `GITLAB_TOKEN`)          | Optional              |
+| `GITLAB_HOST`                                 | Self-hosted GitLab instance (auto-detected from MR URL)               | Optional              |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | AWS Bedrock authentication                                            | For `bedrock/` models |
+| `AWS_REGION` / `AWS_DEFAULT_REGION`           | AWS region for Bedrock (e.g., `ap-south-1`)                           | For `bedrock/` models |
+| `AWS_PROFILE`                                 | AWS profile name (alternative to access keys)                         | For `bedrock/` models |
 
 **Note**: Hodor automatically selects the provider-specific key for the requested model (`ANTHROPIC_API_KEY` for Claude, `OPENAI_API_KEY` for GPT). For `bedrock/` models, no API key is needed — authentication uses AWS credentials (environment variables, profiles, or IAM roles).
 
 **CI Detection**
 
 Hodor auto-detects CI environments and optimizes its execution:
+
 - **GitLab CI**: Uses `$CI_PROJECT_DIR` as the workspace, `$CI_MERGE_REQUEST_TARGET_BRANCH_NAME` for the target branch, and `$CI_MERGE_REQUEST_DIFF_BASE_SHA` for deterministic diffs.
 - **GitHub Actions**: Uses `$GITHUB_WORKSPACE` and `$GITHUB_BASE_REF` for target branch detection.
 
@@ -307,18 +318,18 @@ bun run dev -- <url> # Run from source
 
 Hodor is written in TypeScript and runs on [Bun](https://bun.sh). Key components:
 
-| Module | Purpose |
-|--------|---------|
-| `src/cli.ts` | Commander.js CLI entry point |
-| `src/agent.ts` | Core review orchestration, URL parsing, comment posting |
-| `src/workspace.ts` | CI detection, repo cloning, branch checkout |
-| `src/prompt.ts` | Prompt template building and interpolation |
-| `src/model.ts` | Model string parsing, API key resolution |
-| `src/gitlab.ts` | GitLab API via `glab` CLI |
-| `src/github.ts` | GitHub API via `gh` CLI |
-| `src/render.ts` | JSON review output → markdown rendering |
-| `src/metrics.ts` | Token usage and cost formatting |
-| `templates/` | Review prompt template (JSON schema) |
+| Module             | Purpose                                                 |
+| ------------------ | ------------------------------------------------------- |
+| `src/cli.ts`       | Commander.js CLI entry point                            |
+| `src/agent.ts`     | Core review orchestration, URL parsing, comment posting |
+| `src/workspace.ts` | CI detection, repo cloning, branch checkout             |
+| `src/prompt.ts`    | Prompt template building and interpolation              |
+| `src/model.ts`     | Model string parsing, API key resolution                |
+| `src/gitlab.ts`    | GitLab API via `glab` CLI                               |
+| `src/github.ts`    | GitHub API via `gh` CLI                                 |
+| `src/render.ts`    | JSON review output → markdown rendering                 |
+| `src/metrics.ts`   | Token usage and cost formatting                         |
+| `templates/`       | Review prompt template (JSON schema)                    |
 
 The agent runtime is provided by [`@mariozechner/pi-coding-agent`](https://github.com/badlogic/pi-mono) with [`@mariozechner/pi-ai`](https://github.com/badlogic/pi-mono) for LLM access. The agent session gets read-only tools (bash, read, grep, find, ls) and a review prompt, then autonomously analyzes the PR.
 
@@ -327,10 +338,12 @@ The agent runtime is provided by [`@mariozechner/pi-coding-agent`](https://githu
 ## Learn More
 
 ### Hodor Documentation
+
 - **[SKILLS.md](./docs/SKILLS.md)** - Creating repository-specific review guidelines
 - **[AUTOMATED_REVIEWS.md](./docs/AUTOMATED_REVIEWS.md)** - Advanced CI/CD workflows
 
 ### Contributing
+
 Found a bug? Want to add a feature? Open an issue at https://github.com/mr-karan/hodor/issues.
 
 ---

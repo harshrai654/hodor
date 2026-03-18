@@ -8,6 +8,8 @@ import { exec } from "./utils/exec.js";
 const KB_INDEX_VERSION = 1;
 const KB_ENTRIES_DIR = "entries";
 const KB_INDEX_DIR = "indexes";
+const DEFAULT_KB_GIT_AUTHOR_NAME = "hodor[bot]";
+const DEFAULT_KB_GIT_AUTHOR_EMAIL = "hodor[bot]@users.noreply.github.com";
 
 export const QUERY_KNOWLEDGE_BASE_SCHEMA = Type.Object(
   {
@@ -296,6 +298,40 @@ function resolveKnowledgeLocalPath(): string {
   return resolve(process.cwd(), configuredPath);
 }
 
+function resolveKnowledgeGitAuthor(): { name: string; email: string } {
+  const name = process.env.HODOR_KB_GIT_AUTHOR_NAME?.trim()
+    || process.env.GIT_AUTHOR_NAME?.trim()
+    || process.env.GIT_COMMITTER_NAME?.trim()
+    || DEFAULT_KB_GIT_AUTHOR_NAME;
+  const email = process.env.HODOR_KB_GIT_AUTHOR_EMAIL?.trim()
+    || process.env.GIT_AUTHOR_EMAIL?.trim()
+    || process.env.GIT_COMMITTER_EMAIL?.trim()
+    || DEFAULT_KB_GIT_AUTHOR_EMAIL;
+  return { name, email };
+}
+
+async function ensureKnowledgeGitIdentity(clonePath: string): Promise<void> {
+  const { name, email } = resolveKnowledgeGitAuthor();
+  let configuredName = "";
+  let configuredEmail = "";
+  try {
+    configuredName = (await exec("git", ["config", "--get", "user.name"], { cwd: clonePath })).stdout.trim();
+  } catch {
+    configuredName = "";
+  }
+  try {
+    configuredEmail = (await exec("git", ["config", "--get", "user.email"], { cwd: clonePath })).stdout.trim();
+  } catch {
+    configuredEmail = "";
+  }
+  if (!configuredName) {
+    await exec("git", ["config", "user.name", name], { cwd: clonePath });
+  }
+  if (!configuredEmail) {
+    await exec("git", ["config", "user.email", email], { cwd: clonePath });
+  }
+}
+
 export function getKnowledgeBaseConfig(): KnowledgeBaseConfig {
   const repo = process.env.HODOR_KB_REPO?.trim();
   const branch = process.env.HODOR_KB_BRANCH?.trim() || "main";
@@ -411,10 +447,14 @@ async function syncKnowledgeRepo(config: KnowledgeBaseConfig): Promise<string> {
     }
   }
 
+  if (config.writeEnabled) {
+    await ensureKnowledgeGitIdentity(clonePath);
+  }
+
   try {
     await exec("git", ["fetch", "origin", config.branch], { cwd: clonePath });
     await exec("git", ["checkout", config.branch], { cwd: clonePath });
-    await exec("git", ["pull", "--rebase", "origin", config.branch], { cwd: clonePath });
+    await exec("git", ["pull", "--rebase", "--autostash", "origin", config.branch], { cwd: clonePath });
   } catch (err) {
     if (isMissingBranchError(err) && config.writeEnabled && config.pushOnSave) {
       await bootstrapKnowledgeBranch(clonePath, config.branch);

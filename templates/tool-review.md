@@ -59,7 +59,7 @@ The `+new_start` value is the first new-file line number in that hunk. Count for
 | `grep` | Search for patterns across multiple files |
 | `read` | Read full file context (use sparingly, only when git diff is insufficient) |
 | `query_knowledge_base` | Retrieve durable prior learnings (architecture, stable call chains, coding patterns) relevant to current diff |
-| `save_knowledge_base` | Save only high-signal learnings with strong evidence and medium/high stability after your review is complete |
+| `save_knowledge_base` | Persist high-signal durable learnings as soon as they become high-confidence (not only at the end) |
 | `submit_review` | Submit the final structured review |
 
 ---
@@ -101,6 +101,9 @@ Any file not covered by `inspect` (YAML, configs, markdown, test fixtures) must 
   - optional `paths` and `symbols` from high-risk entities
 - During Phase 2 and Phase 3, you may call `query_knowledge_base` again whenever deeper context is needed.
 - Treat retrieved knowledge as context, not truth. Confirm against current diff before relying on it.
+- Maintain a lightweight question ledger while reviewing:
+  - when a query returns no match, keep the question open and continue investigation in code/diff
+  - before submission, close every open question with evidence-backed conclusions from current analysis
 
 ### Phase 2: Targeted Code Analysis
 
@@ -118,6 +121,11 @@ Work through your agenda in risk order: **CRITICAL → HIGH → MEDIUM → uncov
 ```
 
 This gives the `+`/`-` line-level diff and exact line numbers for findings.
+
+When an open knowledge question becomes answerable from the diff/code:
+
+- write down the answer in your internal reasoning with concrete evidence
+- if the answer is durable and reusable, call `save_knowledge_base` immediately (do not wait for final submission)
 
 **For HIGH or CRITICAL entities with large blast radius:**
 
@@ -212,9 +220,10 @@ When you are done, call `submit_review` exactly once with the final structured r
 
 Before final submission, complete a mandatory knowledge-capture step:
 
-1. Draft a short list (1-3 bullets in your reasoning) of possible durable learnings from this review.
-2. Pick the strongest reusable learning and call `save_knowledge_base` at least once before `submit_review`.
-3. If the save is rejected by tool policy, refine to a higher-signal learning and try again once.
+1. Confirm all key knowledge questions raised earlier are now closed with evidence-backed answers from this review.
+2. Persist durable learnings incrementally during analysis whenever confidence is high (recommended 1-3 focused saves total when warranted).
+3. If no prior save happened, call `save_knowledge_base` at least once with the strongest reusable learning before `submit_review`.
+4. If a save is rejected by tool policy, refine to a higher-signal learning and try again once.
 
 Allowed `save_knowledge_base` categories (use exactly one):
 
@@ -239,6 +248,7 @@ Only save when all are true:
 
 Do not save one-off implementation details, speculative assumptions, temporary branch behavior, cosmetic/style observations, or final PR review comments/findings text.
 Prefer learnings with high reuse frequency that reduce future exploration effort in different PR contexts.
+Avoid writing "final verdict" statements as learnings; store the underlying durable pattern instead.
 
 Valid `save_knowledge_base` example:
 

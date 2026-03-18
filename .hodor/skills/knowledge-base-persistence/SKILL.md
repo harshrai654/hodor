@@ -15,10 +15,21 @@ Use the knowledge base tools to avoid rediscovering foundational repository beha
 - Ask focused questions tied to impacted areas (service layer, call chain, architectural boundary).
 - Use `paths` and `symbols` filters when available to improve relevance.
 - Treat returned entries as hints. Confirm with current diff and code context before concluding.
+- Keep a small "knowledge question ledger" during review:
+  - Mark each important question as `answered` or `unanswered`.
+  - If `query_knowledge_base` returns no match, keep investigating with diff/code context.
+  - Before final submission, every question must be closed with one of:
+    - a concrete answer grounded in current PR evidence, or
+    - an explicit "no durable answer found" conclusion (do not invent one).
 
 ## Save Behavior
 
-Call `save_knowledge_base` only after review conclusions are high confidence.
+Do not defer all saves to the final turn. Save incrementally when confidence becomes high.
+
+- Prefer 1-3 focused saves across the review when multiple durable learnings emerge.
+- Each save should capture one reusable learning, not a summary of the whole review.
+- If a previously unanswered question becomes answered through code analysis, and the answer is durable, persist it immediately with `save_knowledge_base`.
+- Still perform a final pass before submission to ensure at least one strong learning was attempted for persistence.
 
 Save only if all conditions hold:
 
@@ -42,6 +53,7 @@ Do NOT save:
 - Speculation without direct evidence.
 - Repo trivia unlikely to help future analysis.
 - Final PR review comments/findings text copied as-is.
+- End-of-review verdict text as a "learning".
 
 ## Good Save Examples
 
