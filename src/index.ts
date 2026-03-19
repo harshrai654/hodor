@@ -9,9 +9,23 @@ export {
   getKnowledgeBaseConfig,
   queryKnowledgeBase,
   saveKnowledgeBase,
+  checkKnowledgeBaseHealth,
+  checkEmbeddingModelConnectivity,
+  isHighSignalCandidate,
   QUERY_KNOWLEDGE_BASE_SCHEMA,
   SAVE_KNOWLEDGE_BASE_SCHEMA,
 } from "./knowledge.js";
+export type {
+  KnowledgeBaseConfig,
+  KnowledgeBaseHealth,
+  SaveKnowledgeInput,
+  QueryKnowledgeInput,
+  KnowledgeQueryMatch,
+  QueryKnowledgeResult,
+  SaveKnowledgeResult,
+} from "./knowledge.js";
+export { runKnowledgeExtraction, checkExtractionModelConnectivity } from "./extractor.js";
+export type { ExtractionResult } from "./extractor.js";
 export type {
   Platform,
   ParsedPrUrl,

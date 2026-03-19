@@ -72,58 +72,44 @@ When Hodor starts a review:
 
 Hodor no longer inlines skill markdown into the system prompt and no longer uses `.cursorrules` or `AGENTS.md` as repository skills.
 
-## Knowledge Base Persistence Skill
+## Knowledge Base (Qdrant Cloud)
 
-Hodor also supports two optional review tools for cross-run memory:
+Hodor supports a persistent knowledge base backed by Qdrant Cloud vector search and OpenAI embeddings for semantic retrieval.
 
-- `query_knowledge_base`
-- `save_knowledge_base`
+During reviews, the agent queries prior learnings via `query_knowledge_base` to leverage durable architectural and pattern knowledge. After a review completes, a separate extraction pass automatically identifies and persists new learnings from the review transcript.
 
-To guide selective persistence, add a repository skill (recommended path):
+### Architecture
 
-```bash
-mkdir -p .hodor/skills/knowledge-base-persistence
+```
+Review Phase:
+  Agent → query_knowledge_base → embed query (OpenAI) → Qdrant search → ranked context
+
+Post-Review Extraction:
+  Review transcript + output → extraction LLM pass → validate candidates → embed → Qdrant upsert
 ```
 
-Create `.hodor/skills/knowledge-base-persistence/SKILL.md` with frontmatter and rules that enforce:
+### Knowledge Base Environment Variables
 
-- query early (after inspect + changed file list)
-- save late (after high-confidence conclusions)
-- save only durable, high-signal learnings (architecture, stable call chain, recurring patterns)
-- reject incidental details (typos, formatting, renames, temporary behavior)
-- never store final PR review comments/findings text as learnings
-- prioritize learnings with high reuse frequency across future reviews
+Configure Qdrant Cloud connection:
 
-Example frontmatter:
-
-```yaml
----
-name: knowledge-base-persistence
-description: Save only durable, high-signal review learnings into queryable knowledge base.
----
-```
-
-## Knowledge Base Environment Variables
-
-Configure persistence to a sibling GitHub repository:
-
-- `HODOR_KB_REPO` (required): sibling repo slug (`owner/repo`) or clone URL
-- `HODOR_KB_BRANCH` (optional): branch to sync, default `main`
-- `HODOR_KB_LOCAL_PATH` (optional): local checkout path for KB repo cache
-- `HODOR_KB_MAX_RESULTS` (optional): default max query results, default `6`
+- `HODOR_KB_ENABLED` (required): `true`/`false`, default `false`
+- `HODOR_QDRANT_URL` (required when KB enabled): Qdrant Cloud cluster URL
+- `HODOR_QDRANT_API_KEY` (required when KB enabled): API key for Qdrant Cloud
+- `OPENAI_API_KEY` (required when KB enabled): used for embedding generation
 - `HODOR_KB_WRITE_ENABLED` (optional): `true`/`false`, default `true`
-- `HODOR_KB_PUSH_ON_SAVE` (optional): `true`/`false`, default `false`
-- `HODOR_KB_GITHUB_TOKEN` (optional): token for sibling repo clone/pull/push when default auth is unavailable
+- `HODOR_KB_MAX_RESULTS` (optional): default max query results, default `6`
+- `HODOR_KB_EMBEDDING_MODEL` (optional): embedding model, default `text-embedding-3-small`
+- `HODOR_KB_DEDUP_THRESHOLD` (optional): cosine similarity threshold for semantic dedup, default `0.92`
+- `HODOR_KB_EXTRACT_MODEL` (optional): model override for extraction pass (e.g. `openai/gpt-4o-mini`)
 
 Startup behavior:
 - Hodor runs a KB preflight before starting the agent.
-- If the KB repo is unreachable or branch setup is invalid, KB tools are disabled for that run (review still continues).
-- If branch is missing but writes + push-on-save are enabled, Hodor bootstraps the branch on first save.
+- If Qdrant is unreachable or the API key is invalid, KB tools are disabled for that run (review still continues).
+- If the collection does not exist and writes are enabled, Hodor auto-creates it.
 
-Data layout in KB repo:
+### Semantic Dedup
 
-- `entries/<target-repo>.jsonl` (append/update durable learning entries)
-- `indexes/<target-repo>.index.json` (compact lookup index for tags/paths/symbols)
+When saving a learning, Hodor embeds the candidate and searches Qdrant for near-duplicates (threshold >= 0.92 by default). Matching entries get their metadata merged (observation count incremented, paths/symbols/tags unioned) instead of creating duplicates. This catches paraphrased duplicates that hash-based dedup misses.
 
 ## Troubleshooting
 

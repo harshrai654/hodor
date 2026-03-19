@@ -146,18 +146,19 @@ Manual rollout across repositories:
   - move lightweight `v1` tag to latest compatible minor/patch
 - Consumers pin to major (`@v1`) for safe upgrades without per-repo edits.
 
-## Knowledge Base Safety in PR Bot Mode
+## Knowledge Base in CI/CD
 
-When using knowledge-base persistence to a sibling repo:
+When using the Qdrant Cloud-backed knowledge base:
 
 - Configure:
-  - `HODOR_KB_REPO`
-  - `HODOR_KB_BRANCH`
-  - `HODOR_KB_GITHUB_TOKEN` (optional override)
+  - `HODOR_KB_ENABLED=true`
+  - `HODOR_QDRANT_URL` — Qdrant Cloud cluster URL
+  - `HODOR_QDRANT_API_KEY` — API key for Qdrant Cloud
+  - `OPENAI_API_KEY` — used for embedding generation (may share with review model key)
 - For fork PRs, disable writes:
   - `HODOR_KB_WRITE_ENABLED=false`
-  - `HODOR_KB_PUSH_ON_SAVE=false`
 - Allow query/read even when writes are disabled.
+- Post-review extraction runs automatically when writes are enabled; extraction failures never block review output.
 
 ## Setup for GitLab CI
 

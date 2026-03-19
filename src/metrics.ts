@@ -33,6 +33,49 @@ export function formatMetricsMarkdown(metrics: ReviewMetrics): string {
   return lines.join("\n");
 }
 
+export type KnowledgeExtractionFooter =
+  | {
+    attempted: true;
+    extracted: number;
+    saved: number;
+    updated: number;
+    rejected: number;
+    errors: string[];
+    llmMetrics?: {
+      inputTokens: number;
+      outputTokens: number;
+      cacheReadTokens: number;
+      cacheWriteTokens: number;
+      totalTokens: number;
+      cost: number;
+      durationSeconds: number;
+    };
+  }
+  | { attempted: false; skippedReason: string };
+
+export function formatKnowledgeExtractionMarkdown(
+  extraction: KnowledgeExtractionFooter,
+): string {
+  if (!extraction.attempted) {
+    return `**Knowledge Extraction** — skipped (${extraction.skippedReason})`;
+  }
+
+  const lines = [
+    `**Knowledge Extraction** — extracted \`${extraction.extracted}\`, saved \`${extraction.saved}\`, merged \`${extraction.updated}\`, rejected \`${extraction.rejected}\``
+    + (extraction.errors.length > 0 ? `, errors \`${extraction.errors.length}\`` : ""),
+  ];
+
+  if (extraction.llmMetrics) {
+    const m = extraction.llmMetrics;
+    const costPart = m.cost > 0 ? `, cost \`$${m.cost.toFixed(4)}\`` : "";
+    lines.push(
+      `- Extraction LLM: in \`${tok(m.inputTokens)}\` | out \`${tok(m.outputTokens)}\` (total \`${tok(m.totalTokens)}\`, ${formatDuration(m.durationSeconds)}${costPart})`,
+    );
+  }
+
+  return lines.join("\n");
+}
+
 export function printMetrics(metrics: ReviewMetrics, stream: NodeJS.WritableStream = process.stderr): void {
   const dim = chalk.dim;
   const bold = chalk.bold;

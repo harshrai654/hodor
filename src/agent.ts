@@ -8,17 +8,17 @@ import { fetchGitlabMrInfo, postGitlabMrComment } from "./gitlab.js";
 import { setupWorkspace, cleanupWorkspace } from "./workspace.js";
 import { buildPrReviewPrompt } from "./prompt.js";
 import { parseModelString, mapReasoningEffort, getApiKey } from "./model.js";
-import { formatMetricsMarkdown, printMetrics } from "./metrics.js";
+import { formatKnowledgeExtractionMarkdown, formatMetricsMarkdown, printMetrics } from "./metrics.js";
 import { SUBMIT_REVIEW_SCHEMA, validateReviewOutput } from "./review.js";
 import { REVIEW_SYSTEM_PROMPT } from "./system-prompt.js";
 import {
   QUERY_KNOWLEDGE_BASE_SCHEMA,
-  SAVE_KNOWLEDGE_BASE_SCHEMA,
   checkKnowledgeBaseHealth,
+  checkEmbeddingModelConnectivity,
   getKnowledgeBaseConfig,
   queryKnowledgeBase,
-  saveKnowledgeBase,
 } from "./knowledge.js";
+import { runKnowledgeExtraction, checkExtractionModelConnectivity } from "./extractor.js";
 import type {
   Platform,
   ParsedPrUrl,
@@ -113,30 +113,6 @@ export function parsePrUrl(prUrl: string): ParsedPrUrl {
   throw new Error(
     `Invalid PR/MR URL format: ${prUrl}. Expected GitHub pull request or GitLab merge request URL.`,
   );
-}
-
-function normalizeLearningText(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function isNearDuplicateLearning(candidate: string, existing: string): boolean {
-  if (!candidate || !existing) return false;
-  if (candidate === existing) return true;
-
-  const candidateTokens = new Set(candidate.split(" ").filter((token) => token.length > 2));
-  const existingTokens = new Set(existing.split(" ").filter((token) => token.length > 2));
-  if (candidateTokens.size === 0 || existingTokens.size === 0) return false;
-
-  let overlap = 0;
-  for (const token of candidateTokens) {
-    if (existingTokens.has(token)) overlap++;
-  }
-  const minSize = Math.min(candidateTokens.size, existingTokens.size);
-  return overlap / minSize >= 0.8;
 }
 
 export async function postReviewComment(opts: {
@@ -330,16 +306,51 @@ export async function reviewPr(opts: {
         logger.info(`Knowledge base preflight: ${kbHealth.reason}`);
       } else {
         logger.info(
-          `Knowledge base preflight OK (branch: ${
-            kbHealth.branchExists
-              ? knowledgeBaseConfig.branch
-              : "will bootstrap on first save"
+          `Knowledge base preflight OK (collection: ${
+            kbHealth.collectionReady ? "ready" : "will create on first save"
           }, writable: ${kbHealth.writable})`,
         );
       }
     } catch (err) {
       logger.warn(`Knowledge base preflight failed, disabling tools: ${err}`);
       knowledgeBaseConfig = { ...knowledgeBaseConfig, enabled: false };
+    }
+  }
+
+  // Preflight: embedding model connectivity (required for both query and save)
+  if (knowledgeBaseConfig.enabled) {
+    try {
+      const embCheck = await checkEmbeddingModelConnectivity();
+      if (!embCheck.ok) {
+        logger.warn(`Embedding model preflight failed, disabling KB: ${embCheck.reason}`);
+        knowledgeBaseConfig = { ...knowledgeBaseConfig, enabled: false };
+      } else {
+        logger.info("Embedding model preflight OK");
+      }
+    } catch (err) {
+      logger.warn(`Embedding model preflight error, disabling KB: ${err}`);
+      knowledgeBaseConfig = { ...knowledgeBaseConfig, enabled: false };
+    }
+  }
+
+  // Preflight: extraction model connectivity (required for post-review knowledge save)
+  if (knowledgeBaseConfig.enabled && knowledgeBaseConfig.writeEnabled) {
+    try {
+      const extCheck = await checkExtractionModelConnectivity({
+        reviewModel: model,
+        reviewPiModel: piModel,
+      });
+      if (!extCheck.ok) {
+        logger.warn(
+          `Extraction model preflight failed (${extCheck.modelName}), disabling KB writes: ${extCheck.reason}`,
+        );
+        knowledgeBaseConfig = { ...knowledgeBaseConfig, writeEnabled: false };
+      } else {
+        logger.info(`Extraction model preflight OK (${extCheck.modelName})`);
+      }
+    } catch (err) {
+      logger.warn(`Extraction model preflight error, disabling KB writes: ${err}`);
+      knowledgeBaseConfig = { ...knowledgeBaseConfig, writeEnabled: false };
     }
   }
   // --- End preflight ---
@@ -425,7 +436,6 @@ export async function reviewPr(opts: {
     let submittedReview: ReviewOutput | null = null;
     let kbQueryCalls = 0;
     let kbNoMatchResponses = 0;
-    const kbMatchedLearningCorpus = new Set<string>();
     let submitReviewCalls = 0;
     const hasPriorReviewFeedback = Boolean(
       (mrMetadata?.reviewerSummaries?.length ?? 0) > 0
@@ -583,10 +593,6 @@ export async function reviewPr(opts: {
               `${index + 1}. [${match.category}] ${match.learning} (confidence: ${match.confidence})`,
           )
           .join("\n");
-        for (const match of result.matches) {
-          const normalized = normalizeLearningText(match.learning);
-          if (normalized) kbMatchedLearningCorpus.add(normalized);
-        }
         return {
           content: [
             {
@@ -595,89 +601,6 @@ export async function reviewPr(opts: {
             },
           ],
           details: { ok: true, matches: result.matches },
-        };
-      },
-    };
-
-    const saveKnowledgeBaseTool: ToolDefinition = {
-      name: "save_knowledge_base",
-      label: "Save Knowledge Base",
-      description:
-        "Persist a high-signal learning. Category must be architecture, coding_pattern, service_call_chain, or fundamental_design.",
-      parameters: SAVE_KNOWLEDGE_BASE_SCHEMA,
-      execute: async (_toolCallId, params, _signal, _onUpdate, _ctx) => {
-        const candidate = params as {
-          learning: string;
-          category:
-            | "architecture"
-            | "coding_pattern"
-            | "service_call_chain"
-            | "fundamental_design";
-          evidence: string;
-          stability: "low" | "medium" | "high";
-          scope_tags: string[];
-          paths?: string[];
-          symbols?: string[];
-          source_pr?: string;
-        };
-        const normalizedCandidateLearning = normalizeLearningText(candidate.learning);
-        if (normalizedCandidateLearning && kbMatchedLearningCorpus.has(normalizedCandidateLearning)) {
-          return {
-            content: [
-              {
-                type: "text",
-                text: "save_knowledge_base skipped: learning duplicates prior matched knowledge from this run.",
-              },
-            ],
-            details: {
-              ok: false,
-              status: "rejected",
-              reason: "duplicate of prior matched knowledge",
-            },
-          };
-        }
-        for (const priorLearning of kbMatchedLearningCorpus) {
-          if (isNearDuplicateLearning(normalizedCandidateLearning, priorLearning)) {
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: "save_knowledge_base skipped: learning is too similar to prior matched knowledge from this run.",
-                },
-              ],
-              details: {
-                ok: false,
-                status: "rejected",
-                reason: "near-duplicate of prior matched knowledge",
-              },
-            };
-          }
-        }
-
-        const result = await saveKnowledgeBase(
-          knowledgeBaseConfig,
-          targetRepo,
-          candidate,
-        );
-        if (!result.ok) {
-          return {
-            content: [
-              {
-                type: "text",
-                text: `save_knowledge_base skipped: ${result.reason ?? "not saved"}`,
-              },
-            ],
-            details: result,
-          };
-        }
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Learning persisted (${result.status}) with id ${result.entryId ?? "unknown"}.`,
-            },
-          ],
-          details: result,
         };
       },
     };
@@ -695,7 +618,6 @@ export async function reviewPr(opts: {
       ],
       customTools: [
         queryKnowledgeBaseTool,
-        saveKnowledgeBaseTool,
         submitReviewTool,
       ],
       sessionManager: SessionManager.inMemory(),
@@ -894,9 +816,76 @@ export async function reviewPr(opts: {
     };
     printMetrics(metrics);
 
+    let knowledgeExtraction:
+      | {
+        attempted: true;
+        extracted: number;
+        saved: number;
+        updated: number;
+        rejected: number;
+        errors: string[];
+        llmMetrics?: {
+          inputTokens: number;
+          outputTokens: number;
+          cacheReadTokens: number;
+          cacheWriteTokens: number;
+          totalTokens: number;
+          cost: number;
+          durationSeconds: number;
+        };
+      }
+      | { attempted: false; skippedReason: string }
+      | null = null;
+
+    // Post-review knowledge extraction pass (non-blocking)
+    if (knowledgeBaseConfig.enabled && knowledgeBaseConfig.writeEnabled) {
+      try {
+        const transcriptMessages = (
+          session as unknown as { state: { messages: Array<{ role: string; content?: unknown }> } }
+        ).state?.messages ?? [];
+        const reviewOutputJson = JSON.stringify(review, null, 2);
+        const extractionResult = await runKnowledgeExtraction({
+          config: knowledgeBaseConfig,
+          targetRepo,
+          prUrl,
+          reviewModel: model,
+          reviewPiModel: piModel,
+          transcript: transcriptMessages,
+          reviewOutput: reviewOutputJson,
+        });
+        knowledgeExtraction = { attempted: true, ...extractionResult };
+        if (extractionResult.saved > 0 || extractionResult.updated > 0) {
+          logger.info(
+            `Knowledge extraction: ${extractionResult.saved} new, ${extractionResult.updated} merged, ${extractionResult.rejected} rejected`,
+          );
+        }
+        if (extractionResult.errors.length > 0) {
+          logger.warn(`Knowledge extraction errors: ${extractionResult.errors.join("; ")}`);
+        }
+      } catch (err) {
+        knowledgeExtraction = {
+          attempted: true,
+          extracted: 0,
+          saved: 0,
+          updated: 0,
+          rejected: 0,
+          errors: [err instanceof Error ? err.message : String(err)],
+        };
+        logger.warn(`Knowledge extraction failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      }
+    } else if (!knowledgeBaseConfig.enabled) {
+      knowledgeExtraction = { attempted: false, skippedReason: "disabled" };
+    } else if (!knowledgeBaseConfig.writeEnabled) {
+      knowledgeExtraction = { attempted: false, skippedReason: "writes disabled" };
+    }
+
     let metricsFooter: string | null = null;
     if (includeMetricsFooter) {
-      metricsFooter = formatMetricsMarkdown(metrics);
+      const lines = [formatMetricsMarkdown(metrics)];
+      if (knowledgeExtraction) {
+        lines.push(formatKnowledgeExtractionMarkdown(knowledgeExtraction));
+      }
+      metricsFooter = lines.join("\n");
     }
 
     const repoUrl = `https://${host}/${owner}/${repo}`;

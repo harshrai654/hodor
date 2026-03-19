@@ -1,21 +1,36 @@
-import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { randomUUID } from "node:crypto";
 import { Type } from "@sinclair/typebox";
-import { exec } from "./utils/exec.js";
+import {
+  embedText,
+  buildEmbeddingInput,
+  EMBEDDING_DIMENSION,
+} from "./embeddings.js";
+import {
+  ensureCollection,
+  ensurePayloadIndex,
+  upsertPoints,
+  updatePayload,
+  searchPoints,
+  checkHealth,
+  collectionExists,
+  type QdrantConfig,
+  type QdrantFilter,
+} from "./vector-store.js";
+import { logger } from "./utils/logger.js";
 
-const KB_INDEX_VERSION = 1;
-const KB_ENTRIES_DIR = "entries";
-const KB_INDEX_DIR = "indexes";
-const DEFAULT_KB_GIT_AUTHOR_NAME = "hodor[bot]";
-const DEFAULT_KB_GIT_AUTHOR_EMAIL = "hodor[bot]@users.noreply.github.com";
+const KB_COLLECTION = "hodor-kb";
+const DEFAULT_DEDUP_THRESHOLD = 0.92;
+const KB_FILTER_INDEX_FIELDS = ["target_repo"] as const;
 
 export const QUERY_KNOWLEDGE_BASE_SCHEMA = Type.Object(
   {
     query: Type.String({ minLength: 1 }),
-    paths: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { maxItems: 20 })),
-    symbols: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { maxItems: 20 })),
+    paths: Type.Optional(
+      Type.Array(Type.String({ minLength: 1 }), { maxItems: 20 }),
+    ),
+    symbols: Type.Optional(
+      Type.Array(Type.String({ minLength: 1 }), { maxItems: 20 }),
+    ),
     max_results: Type.Optional(Type.Integer({ minimum: 1, maximum: 20 })),
   },
   { additionalProperties: false },
@@ -36,9 +51,16 @@ export const SAVE_KNOWLEDGE_BASE_SCHEMA = Type.Object(
       Type.Literal("medium"),
       Type.Literal("high"),
     ]),
-    scope_tags: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: 20 }),
-    paths: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { maxItems: 20 })),
-    symbols: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { maxItems: 20 })),
+    scope_tags: Type.Array(Type.String({ minLength: 1 }), {
+      minItems: 1,
+      maxItems: 20,
+    }),
+    paths: Type.Optional(
+      Type.Array(Type.String({ minLength: 1 }), { maxItems: 20 }),
+    ),
+    symbols: Type.Optional(
+      Type.Array(Type.String({ minLength: 1 }), { maxItems: 20 }),
+    ),
     source_pr: Type.Optional(Type.String({ minLength: 1 })),
   },
   { additionalProperties: false },
@@ -46,24 +68,28 @@ export const SAVE_KNOWLEDGE_BASE_SCHEMA = Type.Object(
 
 export interface KnowledgeBaseConfig {
   enabled: boolean;
-  repo?: string;
-  branch: string;
-  localPath: string;
-  pushOnSave: boolean;
+  qdrantUrl: string;
+  qdrantApiKey: string;
   writeEnabled: boolean;
   defaultMaxResults: number;
+  embeddingModel: string;
+  dedupThreshold: number;
 }
 
 export interface KnowledgeBaseHealth {
   ok: boolean;
-  branchExists: boolean;
+  collectionReady: boolean;
   writable: boolean;
   reason?: string;
 }
 
 export interface SaveKnowledgeInput {
   learning: string;
-  category: "architecture" | "coding_pattern" | "service_call_chain" | "fundamental_design";
+  category:
+    | "architecture"
+    | "coding_pattern"
+    | "service_call_chain"
+    | "fundamental_design";
   evidence: string;
   stability: "low" | "medium" | "high";
   scope_tags: string[];
@@ -79,9 +105,8 @@ export interface QueryKnowledgeInput {
   max_results?: number;
 }
 
-export interface KnowledgeEntry {
+export interface KnowledgeQueryMatch {
   id: string;
-  targetRepo: string;
   learning: string;
   category: SaveKnowledgeInput["category"];
   evidence: string;
@@ -89,32 +114,7 @@ export interface KnowledgeEntry {
   scopeTags: string[];
   paths: string[];
   symbols: string[];
-  sourcePr: string | null;
-  createdAt: string;
-  updatedAt: string;
-  observations: number;
-  fingerprint: string;
-}
-
-interface KnowledgeIndex {
-  version: number;
-  updatedAt: string;
-  totalEntries: number;
-  byTag: Record<string, string[]>;
-  byPath: Record<string, string[]>;
-  bySymbol: Record<string, string[]>;
-}
-
-export interface KnowledgeQueryMatch {
-  id: string;
-  learning: string;
-  category: KnowledgeEntry["category"];
-  evidence: string;
-  stability: KnowledgeEntry["stability"];
-  scopeTags: string[];
-  paths: string[];
-  symbols: string[];
-  sourcePr: string | null;
+  sourcePrs: string[];
   confidence: number;
 }
 
@@ -145,41 +145,23 @@ function normalizeList(values: string[] | undefined): string[] {
   return [...new Set(values.map((v) => v.trim()).filter(Boolean))];
 }
 
-function sanitizeRepoForPath(targetRepo: string): string {
-  return normalizeRepoId(targetRepo).replace(/[^a-z0-9._-]+/g, "__");
+function mergeArrays(existing: unknown, incoming: string[]): string[] {
+  const prev = Array.isArray(existing) ? (existing as string[]) : [];
+  return [...new Set([...prev, ...incoming])];
 }
 
-function tokenize(text: string): Set<string> {
-  const tokens = text
-    .toLowerCase()
-    .split(/[^a-z0-9_./-]+/)
-    .map((t) => t.trim())
-    .filter((t) => t.length >= 2);
-  return new Set(tokens);
-}
-
-function scoreEntry(entry: KnowledgeEntry, queryTokens: Set<string>, scopeBoost: number): number {
-  const corpus = tokenize(
-    `${entry.learning} ${entry.evidence} ${entry.scopeTags.join(" ")} ${entry.paths.join(" ")} ${entry.symbols.join(" ")}`,
-  );
-  let tokenHits = 0;
-  for (const token of queryTokens) {
-    if (corpus.has(token)) tokenHits++;
-  }
-  const queryMatchScore = queryTokens.size === 0 ? 0 : tokenHits / queryTokens.size;
-  const stabilityScore = entry.stability === "high" ? 1 : entry.stability === "medium" ? 0.7 : 0.3;
-  const recencyDays = (Date.now() - Date.parse(entry.updatedAt)) / (24 * 60 * 60 * 1000);
-  const recencyScore = recencyDays <= 30 ? 1 : recencyDays <= 90 ? 0.7 : 0.4;
-  const score = queryMatchScore * 0.55 + stabilityScore * 0.25 + recencyScore * 0.1 + scopeBoost * 0.1;
-  return Number(score.toFixed(4));
-}
-
-function isHighSignalCandidate(input: SaveKnowledgeInput): { accepted: boolean; reason?: string } {
+export function isHighSignalCandidate(input: SaveKnowledgeInput): {
+  accepted: boolean;
+  reason?: string;
+} {
   if (input.stability === "low") {
     return { accepted: false, reason: "stability must be medium or high" };
   }
   if (input.learning.trim().length < 40) {
-    return { accepted: false, reason: "learning is too short for durable reuse" };
+    return {
+      accepted: false,
+      reason: "learning is too short for durable reuse",
+    };
   }
   if (input.evidence.trim().length < 30) {
     return { accepted: false, reason: "evidence is too short" };
@@ -191,7 +173,10 @@ function isHighSignalCandidate(input: SaveKnowledgeInput): { accepted: boolean; 
     lowercaseLearning.includes("formatting") ||
     lowercaseLearning.includes("temporary")
   ) {
-    return { accepted: false, reason: "learning appears incidental or non-durable" };
+    return {
+      accepted: false,
+      reason: "learning appears incidental or non-durable",
+    };
   }
   const judgementalPatterns = [
     "patch is incorrect",
@@ -206,8 +191,14 @@ function isHighSignalCandidate(input: SaveKnowledgeInput): { accepted: boolean; 
     "this pr",
     "in this pr",
   ];
-  if (judgementalPatterns.some((pattern) => lowercaseLearning.includes(pattern))) {
-    return { accepted: false, reason: "learning appears to be a PR verdict/judgment, not a durable codebase fact" };
+  if (
+    judgementalPatterns.some((pattern) => lowercaseLearning.includes(pattern))
+  ) {
+    return {
+      accepted: false,
+      reason:
+        "learning appears to be a PR verdict/judgment, not a durable codebase fact",
+    };
   }
 
   const factualSignalPatterns = [
@@ -220,324 +211,145 @@ function isHighSignalCandidate(input: SaveKnowledgeInput): { accepted: boolean; 
     "returns",
     "maps",
   ];
-  if (!factualSignalPatterns.some((pattern) => lowercaseLearning.includes(pattern))) {
-    return { accepted: false, reason: "learning must express a durable behavioral/structural fact" };
+  if (
+    !factualSignalPatterns.some((pattern) =>
+      lowercaseLearning.includes(pattern),
+    )
+  ) {
+    return {
+      accepted: false,
+      reason: "learning must express a durable behavioral/structural fact",
+    };
   }
   return { accepted: true };
 }
 
-function buildFingerprint(targetRepo: string, input: SaveKnowledgeInput): string {
-  const canonical = {
-    repo: normalizeRepoId(targetRepo),
-    category: input.category,
-    learning: input.learning.trim().toLowerCase(),
-    scope_tags: normalizeList(input.scope_tags).sort(),
-    paths: normalizeList(input.paths).sort(),
-    symbols: normalizeList(input.symbols).sort(),
-  };
-  return createHash("sha256").update(JSON.stringify(canonical)).digest("hex").slice(0, 24);
-}
-
-function buildEntryId(targetRepo: string, fingerprint: string): string {
-  const ns = createHash("sha256").update(normalizeRepoId(targetRepo)).digest("hex").slice(0, 10);
-  return `kb_${ns}_${fingerprint}`;
-}
-
-async function fileExists(path: string): Promise<boolean> {
-  try {
-    await readFile(path, "utf8");
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function readEntries(entriesPath: string): Promise<KnowledgeEntry[]> {
-  const exists = await fileExists(entriesPath);
-  if (!exists) return [];
-  const content = await readFile(entriesPath, "utf8");
-  const lines = content
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
-  return lines.map((line) => JSON.parse(line) as KnowledgeEntry);
-}
-
-function buildIndex(entries: KnowledgeEntry[]): KnowledgeIndex {
-  const byTag: Record<string, string[]> = {};
-  const byPath: Record<string, string[]> = {};
-  const bySymbol: Record<string, string[]> = {};
-  for (const entry of entries) {
-    for (const tag of entry.scopeTags) {
-      byTag[tag] ??= [];
-      byTag[tag].push(entry.id);
-    }
-    for (const path of entry.paths) {
-      byPath[path] ??= [];
-      byPath[path].push(entry.id);
-    }
-    for (const symbol of entry.symbols) {
-      bySymbol[symbol] ??= [];
-      bySymbol[symbol].push(entry.id);
-    }
-  }
-  return {
-    version: KB_INDEX_VERSION,
-    updatedAt: new Date().toISOString(),
-    totalEntries: entries.length,
-    byTag,
-    byPath,
-    bySymbol,
-  };
-}
-
-async function writeEntries(entriesPath: string, entries: KnowledgeEntry[]): Promise<void> {
-  const jsonl = entries.map((entry) => JSON.stringify(entry)).join("\n");
-  await writeFile(entriesPath, jsonl ? `${jsonl}\n` : "", "utf8");
-}
-
-async function writeIndex(indexPath: string, index: KnowledgeIndex): Promise<void> {
-  await writeFile(indexPath, `${JSON.stringify(index, null, 2)}\n`, "utf8");
-}
-
-function resolveRepoCloneUrl(repo: string): string {
-  if (repo.includes("://")) return repo;
-  const token = process.env.HODOR_KB_GITHUB_TOKEN ?? process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN;
-  if (token) {
-    return `https://x-access-token:${encodeURIComponent(token)}@github.com/${repo}.git`;
-  }
-  return `https://github.com/${repo}.git`;
-}
-
-function isMissingBranchError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return (
-    message.includes("couldn't find remote ref") ||
-    message.includes("pathspec") ||
-    message.includes("did not match any file") ||
-    message.includes("unknown revision")
-  );
-}
-
-function resolveKnowledgeLocalPath(): string {
-  const configuredPath = process.env.HODOR_KB_LOCAL_PATH;
-  if (!configuredPath) {
-    return join(homedir(), ".hodor", "knowledge-base");
-  }
-  if (isAbsolute(configuredPath)) return configuredPath;
-  return resolve(process.cwd(), configuredPath);
-}
-
-function resolveKnowledgeGitAuthor(): { name: string; email: string } {
-  const name = process.env.HODOR_KB_GIT_AUTHOR_NAME?.trim()
-    || process.env.GIT_AUTHOR_NAME?.trim()
-    || process.env.GIT_COMMITTER_NAME?.trim()
-    || DEFAULT_KB_GIT_AUTHOR_NAME;
-  const email = process.env.HODOR_KB_GIT_AUTHOR_EMAIL?.trim()
-    || process.env.GIT_AUTHOR_EMAIL?.trim()
-    || process.env.GIT_COMMITTER_EMAIL?.trim()
-    || DEFAULT_KB_GIT_AUTHOR_EMAIL;
-  return { name, email };
-}
-
-async function ensureKnowledgeGitIdentity(clonePath: string): Promise<void> {
-  const { name, email } = resolveKnowledgeGitAuthor();
-  let configuredName = "";
-  let configuredEmail = "";
-  try {
-    configuredName = (await exec("git", ["config", "--get", "user.name"], { cwd: clonePath })).stdout.trim();
-  } catch {
-    configuredName = "";
-  }
-  try {
-    configuredEmail = (await exec("git", ["config", "--get", "user.email"], { cwd: clonePath })).stdout.trim();
-  } catch {
-    configuredEmail = "";
-  }
-  if (!configuredName) {
-    await exec("git", ["config", "user.name", name], { cwd: clonePath });
-  }
-  if (!configuredEmail) {
-    await exec("git", ["config", "user.email", email], { cwd: clonePath });
-  }
-}
-
 export function getKnowledgeBaseConfig(): KnowledgeBaseConfig {
-  const repo = process.env.HODOR_KB_REPO?.trim();
-  const branch = process.env.HODOR_KB_BRANCH?.trim() || "main";
-  const localPath = resolveKnowledgeLocalPath();
-  const pushOnSave = parseBoolean(process.env.HODOR_KB_PUSH_ON_SAVE, false);
+  const qdrantUrl = process.env.HODOR_QDRANT_URL?.trim() ?? "";
+  const qdrantApiKey = process.env.HODOR_QDRANT_API_KEY?.trim() ?? "";
+  const enabled =
+    parseBoolean(process.env.HODOR_KB_ENABLED, false) &&
+    Boolean(qdrantUrl) &&
+    Boolean(qdrantApiKey);
   const writeEnabled = parseBoolean(process.env.HODOR_KB_WRITE_ENABLED, true);
-  const defaultMaxResultsRaw = Number.parseInt(process.env.HODOR_KB_MAX_RESULTS ?? "", 10);
-  const defaultMaxResults = Number.isFinite(defaultMaxResultsRaw) && defaultMaxResultsRaw > 0
-    ? Math.min(defaultMaxResultsRaw, 20)
-    : 6;
+  const defaultMaxResultsRaw = Number.parseInt(
+    process.env.HODOR_KB_MAX_RESULTS ?? "",
+    10,
+  );
+  const defaultMaxResults =
+    Number.isFinite(defaultMaxResultsRaw) && defaultMaxResultsRaw > 0
+      ? Math.min(defaultMaxResultsRaw, 20)
+      : 6;
+  const embeddingModel =
+    process.env.HODOR_KB_EMBEDDING_MODEL?.trim() || "text-embedding-3-small";
+  const dedupRaw = Number.parseFloat(
+    process.env.HODOR_KB_DEDUP_THRESHOLD ?? "",
+  );
+  const dedupThreshold =
+    Number.isFinite(dedupRaw) && dedupRaw > 0 && dedupRaw <= 1
+      ? dedupRaw
+      : DEFAULT_DEDUP_THRESHOLD;
+
   return {
-    enabled: Boolean(repo),
-    repo,
-    branch,
-    localPath,
-    pushOnSave,
+    enabled,
+    qdrantUrl,
+    qdrantApiKey,
     writeEnabled,
     defaultMaxResults,
+    embeddingModel,
+    dedupThreshold,
   };
+}
+
+function getQdrantConfig(config: KnowledgeBaseConfig): QdrantConfig {
+  return { url: config.qdrantUrl, apiKey: config.qdrantApiKey };
+}
+
+async function ensureKbCollectionAndIndexes(config: KnowledgeBaseConfig): Promise<void> {
+  const qdrant = getQdrantConfig(config);
+  await ensureCollection(qdrant, KB_COLLECTION, EMBEDDING_DIMENSION);
+  for (const field of KB_FILTER_INDEX_FIELDS) {
+    await ensurePayloadIndex(qdrant, KB_COLLECTION, field, "keyword");
+  }
 }
 
 export async function checkKnowledgeBaseHealth(
   config: KnowledgeBaseConfig,
 ): Promise<KnowledgeBaseHealth> {
-  if (!config.enabled || !config.repo) {
-    return { ok: false, branchExists: false, writable: false, reason: "HODOR_KB_REPO not configured" };
-  }
-
-  if (parseBoolean(process.env.HODOR_KB_SKIP_SYNC, false)) {
-    return { ok: true, branchExists: true, writable: config.writeEnabled };
-  }
-
-  const remoteUrl = resolveRepoCloneUrl(config.repo);
-
-  try {
-    await exec("git", ["ls-remote", remoteUrl]);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+  if (!config.enabled) {
     return {
       ok: false,
-      branchExists: false,
+      collectionReady: false,
       writable: false,
-      reason: `KB repo is not reachable/authenticated: ${message}`,
+      reason:
+        "Knowledge base not enabled (set HODOR_KB_ENABLED=true, HODOR_QDRANT_URL, HODOR_QDRANT_API_KEY)",
     };
   }
 
-  let branchExists = true;
-  try {
-    await exec("git", ["ls-remote", "--exit-code", "--heads", remoteUrl, config.branch]);
-  } catch {
-    branchExists = false;
-  }
-
-  if (!branchExists) {
-    if (config.writeEnabled && config.pushOnSave) {
-      return {
-        ok: true,
-        branchExists: false,
-        writable: true,
-        reason: `KB branch '${config.branch}' missing; it will be bootstrapped on first save.`,
-      };
-    }
+  const qdrant = getQdrantConfig(config);
+  const reachable = await checkHealth(qdrant);
+  if (!reachable) {
     return {
       ok: false,
-      branchExists: false,
+      collectionReady: false,
       writable: false,
-      reason: `KB branch '${config.branch}' does not exist. Enable push-on-save to bootstrap it, or create the branch manually.`,
+      reason: "Qdrant cluster is not reachable",
     };
   }
 
-  return { ok: true, branchExists: true, writable: config.writeEnabled };
-}
-
-async function bootstrapKnowledgeBranch(clonePath: string, branch: string): Promise<void> {
-  await exec("git", ["checkout", "-B", branch], { cwd: clonePath });
-  await mkdir(join(clonePath, KB_ENTRIES_DIR), { recursive: true });
-  await mkdir(join(clonePath, KB_INDEX_DIR), { recursive: true });
-  await writeFile(
-    join(clonePath, "README.md"),
-    "# Hodor Knowledge Base\n\nPersistent review learnings stored by Hodor.\n",
-    "utf8",
-  );
-  await writeFile(join(clonePath, KB_ENTRIES_DIR, ".gitkeep"), "", "utf8");
-  await writeFile(join(clonePath, KB_INDEX_DIR, ".gitkeep"), "", "utf8");
-  await exec("git", ["add", "README.md", join(KB_ENTRIES_DIR, ".gitkeep"), join(KB_INDEX_DIR, ".gitkeep")], {
-    cwd: clonePath,
-  });
-  await exec("git", ["commit", "-m", "knowledge: bootstrap storage"], { cwd: clonePath });
-  await exec("git", ["push", "-u", "origin", `HEAD:${branch}`], { cwd: clonePath });
-}
-
-async function syncKnowledgeRepo(config: KnowledgeBaseConfig): Promise<string> {
-  if (!config.enabled || !config.repo) {
-    throw new Error("Knowledge base is disabled. Set HODOR_KB_REPO to enable it.");
-  }
-
-  const clonePath = config.localPath;
-  const skipSync = parseBoolean(process.env.HODOR_KB_SKIP_SYNC, false);
-  if (skipSync) {
-    await mkdir(join(clonePath, KB_ENTRIES_DIR), { recursive: true });
-    await mkdir(join(clonePath, KB_INDEX_DIR), { recursive: true });
-    return clonePath;
-  }
-
-  await mkdir(dirname(clonePath), { recursive: true });
-  const hasGit = await fileExists(join(clonePath, ".git", "HEAD"));
-  if (!hasGit) {
-    await mkdir(dirname(clonePath), { recursive: true });
-    try {
-      await exec("gh", ["repo", "clone", config.repo, clonePath]);
-    } catch {
-      await exec("git", ["clone", resolveRepoCloneUrl(config.repo), clonePath]);
+  const exists = await collectionExists(qdrant, KB_COLLECTION);
+  if (!exists) {
+    if (config.writeEnabled) {
+      try {
+        await ensureKbCollectionAndIndexes(config);
+        return {
+          ok: true,
+          collectionReady: true,
+          writable: true,
+          reason: `Collection '${KB_COLLECTION}' created`,
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return {
+          ok: false,
+          collectionReady: false,
+          writable: false,
+          reason: `Failed to create collection: ${msg}`,
+        };
+      }
     }
+    return {
+      ok: true,
+      collectionReady: false,
+      writable: false,
+      reason: `Collection '${KB_COLLECTION}' does not exist; enable writes to auto-create`,
+    };
   }
 
-  if (config.writeEnabled) {
-    await ensureKnowledgeGitIdentity(clonePath);
-  }
-
+  // Ensure required indexes exist for filtered search (safe if already present)
   try {
-    await exec("git", ["fetch", "origin", config.branch], { cwd: clonePath });
-    await exec("git", ["checkout", config.branch], { cwd: clonePath });
-    await exec("git", ["pull", "--rebase", "--autostash", "origin", config.branch], { cwd: clonePath });
+    await ensurePayloadIndex(qdrant, KB_COLLECTION, "target_repo", "keyword");
   } catch (err) {
-    if (isMissingBranchError(err) && config.writeEnabled && config.pushOnSave) {
-      await bootstrapKnowledgeBranch(clonePath, config.branch);
-    } else if (isMissingBranchError(err)) {
-      throw new Error(
-        `Knowledge base branch '${config.branch}' is missing. Enable HODOR_KB_PUSH_ON_SAVE with write access, or create the branch manually.`,
-      );
-    } else {
-      throw err;
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, collectionReady: true, writable: false, reason: `Failed to ensure payload index: ${msg}` };
+  }
+
+  return { ok: true, collectionReady: true, writable: config.writeEnabled };
+}
+
+export async function checkEmbeddingModelConnectivity(): Promise<{ ok: boolean; reason?: string }> {
+  try {
+    const vector = await embedText("knowledge embedding preflight probe");
+    if (!Array.isArray(vector) || vector.length === 0) {
+      return { ok: false, reason: "Embedding model returned an empty vector" };
     }
+    return { ok: true };
+  } catch (err) {
+    return {
+      ok: false,
+      reason: err instanceof Error ? err.message : String(err),
+    };
   }
-  await mkdir(join(clonePath, KB_ENTRIES_DIR), { recursive: true });
-  await mkdir(join(clonePath, KB_INDEX_DIR), { recursive: true });
-  return clonePath;
-}
-
-function getTargetRepoPaths(clonePath: string, targetRepo: string): { entriesPath: string; indexPath: string } {
-  const repoFile = sanitizeRepoForPath(targetRepo);
-  return {
-    entriesPath: join(clonePath, KB_ENTRIES_DIR, `${repoFile}.jsonl`),
-    indexPath: join(clonePath, KB_INDEX_DIR, `${repoFile}.index.json`),
-  };
-}
-
-function applyScopeFilter(entry: KnowledgeEntry, query: QueryKnowledgeInput): number {
-  let boost = 0;
-  const queryPaths = normalizeList(query.paths);
-  const querySymbols = normalizeList(query.symbols);
-  if (queryPaths.length > 0) {
-    if (queryPaths.some((p) => entry.paths.includes(p))) boost += 1;
-    else return -1;
-  }
-  if (querySymbols.length > 0) {
-    if (querySymbols.some((s) => entry.symbols.includes(s))) boost += 1;
-    else return -1;
-  }
-  return boost;
-}
-
-async function maybeCommitAndPush(
-  clonePath: string,
-  branch: string,
-  repoSlug: string,
-  relativePaths: string[],
-): Promise<void> {
-  const status = await exec("git", ["status", "--porcelain", ...relativePaths], { cwd: clonePath });
-  if (status.stdout.trim().length === 0) return;
-
-  await exec("git", ["add", ...relativePaths], { cwd: clonePath });
-
-  const message = `knowledge: update ${repoSlug} learnings`;
-  await exec("git", ["commit", "-m", message], { cwd: clonePath });
-  await exec("git", ["push", "origin", `HEAD:${branch}`], { cwd: clonePath });
 }
 
 export async function queryKnowledgeBase(
@@ -546,41 +358,68 @@ export async function queryKnowledgeBase(
   query: QueryKnowledgeInput,
 ): Promise<QueryKnowledgeResult> {
   if (!config.enabled) {
-    return { ok: false, reason: "Knowledge base disabled (missing HODOR_KB_REPO)", matches: [] };
-  }
-  const clonePath = await syncKnowledgeRepo(config);
-  const { entriesPath } = getTargetRepoPaths(clonePath, targetRepo);
-  const entries = await readEntries(entriesPath);
-  if (entries.length === 0) {
-    return { ok: true, matches: [] };
+    return { ok: false, reason: "Knowledge base disabled", matches: [] };
   }
 
-  const queryTokens = tokenize(query.query);
-  const ranked = entries
-    .map((entry) => {
-      const scopeBoost = applyScopeFilter(entry, query);
-      if (scopeBoost < 0) return null;
-      const confidence = scoreEntry(entry, queryTokens, scopeBoost);
-      return { entry, confidence };
-    })
-    .filter((item): item is { entry: KnowledgeEntry; confidence: number } => item != null)
-    .sort((a, b) => b.confidence - a.confidence || b.entry.updatedAt.localeCompare(a.entry.updatedAt));
+  const repoId = normalizeRepoId(targetRepo);
 
+  let queryVector: number[];
+  try {
+    queryVector = await embedText(query.query);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.warn(`Failed to embed query: ${msg}`);
+    return { ok: false, reason: `Embedding failed: ${msg}`, matches: [] };
+  }
+
+  const mustConditions: Array<{ key: string; match: { value: string } }> = [
+    { key: "target_repo", match: { value: repoId } },
+  ];
+
+  const filter: QdrantFilter = { must: mustConditions };
   const limit = query.max_results ?? config.defaultMaxResults;
-  const matches = ranked.slice(0, limit).map(({ entry, confidence }) => ({
-    id: entry.id,
-    learning: entry.learning,
-    category: entry.category,
-    evidence: entry.evidence,
-    stability: entry.stability,
-    scopeTags: entry.scopeTags,
-    paths: entry.paths,
-    symbols: entry.symbols,
-    sourcePr: entry.sourcePr,
-    confidence,
-  }));
 
-  return { ok: true, matches };
+  const qdrant = getQdrantConfig(config);
+  try {
+    const results = await searchPoints(
+      qdrant,
+      KB_COLLECTION,
+      queryVector,
+      filter,
+      limit,
+    );
+    const matches: KnowledgeQueryMatch[] = results.map((hit) => ({
+      id: hit.id,
+      learning: String(hit.payload.learning ?? ""),
+      category: hit.payload.category as KnowledgeQueryMatch["category"],
+      evidence: String(hit.payload.evidence ?? ""),
+      stability: hit.payload.stability as KnowledgeQueryMatch["stability"],
+      scopeTags: (hit.payload.scope_tags as string[]) ?? [],
+      paths: (hit.payload.paths as string[]) ?? [],
+      symbols: (hit.payload.symbols as string[]) ?? [],
+      sourcePrs: (hit.payload.source_prs as string[]) ?? [],
+      confidence: Number(hit.score.toFixed(4)),
+    }));
+
+    const queryPaths = normalizeList(query.paths);
+    const querySymbols = normalizeList(query.symbols);
+    const filtered = matches.filter((m) => {
+      if (queryPaths.length > 0 && !queryPaths.some((p) => m.paths.includes(p)))
+        return false;
+      if (
+        querySymbols.length > 0 &&
+        !querySymbols.some((s) => m.symbols.includes(s))
+      )
+        return false;
+      return true;
+    });
+
+    return { ok: true, matches: filtered };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.warn(`Qdrant search failed: ${msg}`);
+    return { ok: false, reason: `Search failed: ${msg}`, matches: [] };
+  }
 }
 
 export async function saveKnowledgeBase(
@@ -589,10 +428,14 @@ export async function saveKnowledgeBase(
   input: SaveKnowledgeInput,
 ): Promise<SaveKnowledgeResult> {
   if (!config.enabled) {
-    return { ok: false, status: "disabled", reason: "Knowledge base disabled (missing HODOR_KB_REPO)" };
+    return { ok: false, status: "disabled", reason: "Knowledge base disabled" };
   }
   if (!config.writeEnabled) {
-    return { ok: false, status: "disabled", reason: "Knowledge base writes disabled by HODOR_KB_WRITE_ENABLED" };
+    return {
+      ok: false,
+      status: "disabled",
+      reason: "Knowledge base writes disabled by HODOR_KB_WRITE_ENABLED",
+    };
   }
 
   const gate = isHighSignalCandidate(input);
@@ -600,53 +443,89 @@ export async function saveKnowledgeBase(
     return { ok: false, status: "rejected", reason: gate.reason };
   }
 
-  const clonePath = await syncKnowledgeRepo(config);
-  const repoSlug = normalizeRepoId(targetRepo);
-  const { entriesPath, indexPath } = getTargetRepoPaths(clonePath, repoSlug);
-  const entries = await readEntries(entriesPath);
+  const repoId = normalizeRepoId(targetRepo);
+  const embeddingInput = buildEmbeddingInput(input);
+
+  let vector: number[];
+  try {
+    vector = await embedText(embeddingInput);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return {
+      ok: false,
+      status: "rejected",
+      reason: `Embedding failed: ${msg}`,
+    };
+  }
+
+  const qdrant = getQdrantConfig(config);
   const now = new Date().toISOString();
-  const fingerprint = buildFingerprint(repoSlug, input);
-  const existing = entries.find((entry) => entry.fingerprint === fingerprint);
 
-  let status: SaveKnowledgeResult["status"] = "saved";
-  let entryId: string;
-  if (existing) {
-    existing.updatedAt = now;
-    existing.observations += 1;
-    if (input.source_pr) existing.sourcePr = input.source_pr;
-    status = "updated";
-    entryId = existing.id;
-  } else {
-    const id = buildEntryId(repoSlug, fingerprint);
-    entryId = id;
-    entries.push({
-      id,
-      targetRepo: repoSlug,
-      learning: input.learning.trim(),
-      category: input.category,
-      evidence: input.evidence.trim(),
-      stability: input.stability,
-      scopeTags: normalizeList(input.scope_tags),
-      paths: normalizeList(input.paths),
-      symbols: normalizeList(input.symbols),
-      sourcePr: input.source_pr ?? null,
-      createdAt: now,
-      updatedAt: now,
-      observations: 1,
-      fingerprint,
-    });
+  try {
+    await ensureKbCollectionAndIndexes(config);
+
+    const dedupResults = await searchPoints(
+      qdrant,
+      KB_COLLECTION,
+      vector,
+      { must: [{ key: "target_repo", match: { value: repoId } }] },
+      1,
+      config.dedupThreshold,
+    );
+
+    if (dedupResults.length > 0) {
+      const existing = dedupResults[0];
+      const mergedPayload: Record<string, unknown> = {
+        observations: (Number(existing.payload.observations) || 1) + 1,
+        updated_at: now,
+        paths: mergeArrays(existing.payload.paths, normalizeList(input.paths)),
+        symbols: mergeArrays(
+          existing.payload.symbols,
+          normalizeList(input.symbols),
+        ),
+        scope_tags: mergeArrays(
+          existing.payload.scope_tags,
+          normalizeList(input.scope_tags),
+        ),
+        source_prs: mergeArrays(
+          existing.payload.source_prs,
+          input.source_pr ? [input.source_pr] : [],
+        ),
+      };
+
+      await updatePayload(qdrant, KB_COLLECTION, existing.id, mergedPayload);
+      logger.info(
+        `Merged duplicate learning into existing point ${existing.id} (score: ${existing.score.toFixed(3)})`,
+      );
+      return { ok: true, status: "updated", entryId: existing.id };
+    }
+
+    const pointId = randomUUID();
+    await upsertPoints(qdrant, KB_COLLECTION, [
+      {
+        id: pointId,
+        vector,
+        payload: {
+          target_repo: repoId,
+          learning: input.learning.trim(),
+          category: input.category,
+          evidence: input.evidence.trim(),
+          stability: input.stability,
+          scope_tags: normalizeList(input.scope_tags),
+          paths: normalizeList(input.paths),
+          symbols: normalizeList(input.symbols),
+          source_prs: input.source_pr ? [input.source_pr] : [],
+          created_at: now,
+          updated_at: now,
+          observations: 1,
+        },
+      },
+    ]);
+
+    return { ok: true, status: "saved", entryId: pointId };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.warn(`Knowledge base save failed: ${msg}`);
+    return { ok: false, status: "rejected", reason: `Save failed: ${msg}` };
   }
-
-  const sortedEntries = [...entries].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-  const index = buildIndex(sortedEntries);
-  await writeEntries(entriesPath, sortedEntries);
-  await writeIndex(indexPath, index);
-
-  if (config.pushOnSave) {
-    const entriesRel = join(KB_ENTRIES_DIR, basename(entriesPath));
-    const indexRel = join(KB_INDEX_DIR, basename(indexPath));
-    await maybeCommitAndPush(clonePath, config.branch, repoSlug, [entriesRel, indexRel]);
-  }
-
-  return { ok: true, status, entryId };
 }

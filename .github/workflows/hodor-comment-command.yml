@@ -82,8 +82,11 @@ jobs:
     with:
       pr_number: ${{ github.event.issue.number }}
       prompt: ${{ needs.parse.outputs.prompt }}
-      kb_repo: ${{ vars.HODOR_KB_REPO }}
-      kb_branch: ${{ vars.HODOR_KB_BRANCH || 'main' }}
+      kb_enabled: ${{ vars.HODOR_KB_ENABLED || 'true' }}
+      qdrant_url: ${{ vars.HODOR_QDRANT_URL }}
+      kb_embedding_model: ${{ vars.HODOR_KB_EMBEDDING_MODEL }}
+      kb_dedup_threshold: ${{ vars.HODOR_KB_DEDUP_THRESHOLD }}
+      kb_extract_model: ${{ vars.HODOR_KB_EXTRACT_MODEL }}
       model: ${{ vars.HODOR_LLM_MODEL || 'openai/gpt-5' }}
       hodor_repo: ${{ vars.HODOR_SOURCE_REPO || 'KoinX-Tech/hodor' }}
     secrets: inherit

@@ -21,15 +21,27 @@ on:
         required: false
         type: string
         default: mr-karan/hodor
-      kb_repo:
-        description: Optional knowledge base repository slug (org/repo)
+      kb_enabled:
+        description: Enable Qdrant-backed knowledge base (true/false)
         required: false
         type: string
-      kb_branch:
-        description: Knowledge base branch
+        default: "false"
+      qdrant_url:
+        description: Qdrant Cloud cluster URL (required when kb_enabled=true)
         required: false
         type: string
-        default: main
+      kb_embedding_model:
+        description: Optional embedding model override (default text-embedding-3-small)
+        required: false
+        type: string
+      kb_dedup_threshold:
+        description: Optional dedup threshold override (default 0.92)
+        required: false
+        type: string
+      kb_extract_model:
+        description: Optional extraction model override (e.g. openai/gpt-4o-mini)
+        required: false
+        type: string
     secrets:
       LLM_API_KEY:
         required: false
@@ -37,7 +49,7 @@ on:
         required: false
       OPENAI_API_KEY:
         required: false
-      HODOR_KB_GITHUB_TOKEN:
+      HODOR_QDRANT_API_KEY:
         required: false
 
 permissions:
@@ -181,11 +193,14 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Do not rely on overriding GITHUB_* vars from workflow env.
           HODOR_BASE_REF: ${{ steps.pr.outputs.base_ref }}
-          HODOR_KB_REPO: ${{ inputs.kb_repo }}
-          HODOR_KB_BRANCH: ${{ inputs.kb_branch }}
-          HODOR_KB_GITHUB_TOKEN: ${{ secrets.HODOR_KB_GITHUB_TOKEN }}
+          HODOR_KB_ENABLED: ${{ inputs.kb_enabled }}
+          HODOR_QDRANT_URL: ${{ inputs.qdrant_url }}
+          HODOR_QDRANT_API_KEY: ${{ secrets.HODOR_QDRANT_API_KEY }}
+          # Disable KB writes on fork PRs by default (queries still allowed).
           HODOR_KB_WRITE_ENABLED: ${{ steps.pr.outputs.is_fork == 'true' && 'false' || 'true' }}
-          HODOR_KB_PUSH_ON_SAVE: ${{ steps.pr.outputs.is_fork == 'true' && 'false' || 'true' }}
+          HODOR_KB_EMBEDDING_MODEL: ${{ inputs.kb_embedding_model }}
+          HODOR_KB_DEDUP_THRESHOLD: ${{ inputs.kb_dedup_threshold }}
+          HODOR_KB_EXTRACT_MODEL: ${{ inputs.kb_extract_model }}
           CUSTOM_PROMPT: ${{ inputs.prompt }}
         run: |
           set -euo pipefail

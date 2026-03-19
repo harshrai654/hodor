@@ -61,7 +61,6 @@ The `+new_start` value is the first new-file line number in that hunk. Count for
 | `grep` | Search for patterns across multiple files |
 | `read` | Read full file context (use sparingly, only when git diff is insufficient) |
 | `query_knowledge_base` | Retrieve durable prior learnings (architecture, stable call chains, coding patterns) relevant to current diff |
-| `save_knowledge_base` | Persist high-signal durable learnings as soon as they become high-confidence (not only at the end) |
 | `submit_review` | Submit the final structured review |
 
 **Execution style constraints (MANDATORY):**
@@ -115,8 +114,8 @@ Any file not covered by `inspect` (YAML, configs, markdown, test fixtures) must 
 
 **Step 1d — Load repository conventions (MANDATORY when available):**
 
-- Check whether an `AGENTS.md` file exists in the reviewed repository.
-- If present, read it early and treat it as authoritative project guidance for review criteria (architecture constraints, coding standards, testing expectations, workflow rules).
+- Check whether an `AGENTS.md` file exists at the workspace root using `read AGENTS.md` (do NOT use find or search the filesystem for it).
+- If present, treat it as authoritative project guidance for review criteria (architecture constraints, coding standards, testing expectations, workflow rules).
 - Only raise convention-related findings when the diff clearly violates guidance from `AGENTS.md` or other explicit in-repo standards.
 
 ### Phase 2: Targeted Code Analysis
@@ -135,11 +134,6 @@ Work through your agenda in risk order: **CRITICAL → HIGH → MEDIUM → uncov
 ```
 
 This gives the `+`/`-` line-level diff and exact line numbers for findings.
-
-When an open knowledge question becomes answerable from the diff/code:
-
-- write down the answer in your internal reasoning with concrete evidence
-- if the answer is durable and reusable, call `save_knowledge_base` immediately (do not wait for final submission)
 
 **For HIGH or CRITICAL entities with large blast radius:**
 
@@ -246,13 +240,6 @@ Output all findings that the original author would fix if they knew about it. If
 
 When you are done, call `submit_review` exactly once with the final structured review.
 
-Before final submission, complete a mandatory knowledge-capture step:
-
-1. Confirm all key knowledge questions raised earlier are now closed with evidence-backed answers from this review.
-2. Persist durable learnings incrementally during analysis whenever confidence is high (recommended 0-2 focused saves total when warranted).
-3. `save_knowledge_base` is OPTIONAL. Do not force a save just to satisfy process.
-4. If a save is rejected by tool policy, do not retry unless you found a materially different durable fact.
-
 Before calling `submit_review`, include concise context fields so authors can validate your understanding:
 
 - `pr_understanding`: 2-4 bullets on PR intent and scope
@@ -262,48 +249,6 @@ Before calling `submit_review`, include concise context fields so authors can va
 - `maintainability_assessment`: required single sentence: either summarize high-signal maintainability concerns found, or explicitly state none were found
 - `confidence_notes` (optional): assumptions, uncertainty, or follow-up caveats
 - `kb_question_closure` (required if any `query_knowledge_base` call returned no matches): one evidence-backed sentence explaining how those open questions were resolved (or why no durable answer was found)
-
-Allowed `save_knowledge_base` categories (use exactly one):
-
-- `architecture`: core system boundaries, invariants, or fundamental design constraints
-- `service_call_chain`: stable multi-step execution flows across services/modules
-- `coding_pattern`: recurring implementation patterns/guards used across the codebase
-- `fundamental_design`: foundational domain/data model behaviors that affect many features
-
-Category selection guide:
-
-- If it explains how modules/services are structured or constrained, use `architecture`.
-- If it explains how requests/jobs/events flow through multiple layers, use `service_call_chain`.
-- If it explains a reusable code-level technique (validation, retry, safety guard), use `coding_pattern`.
-- If it explains durable domain semantics used repeatedly, use `fundamental_design`.
-
-Only save when all are true:
-
-- The learning captures fundamental architecture, design invariants, stable call chains, or recurring coding patterns.
-- You can cite concrete evidence from this review.
-- The learning is likely reusable in future PR reviews for the same repository.
-- Stability is at least medium.
-- The fact is not already captured by prior query results in this run (avoid duplicate/near-duplicate restatements).
-- The statement is a durable codebase fact (how code is structured/behaves), not a PR verdict, reviewer judgment, or issue commentary.
-
-Do not save one-off implementation details, speculative assumptions, temporary branch behavior, cosmetic/style observations, or final PR review comments/findings text.
-Prefer learnings with high reuse frequency that reduce future exploration effort in different PR contexts.
-Avoid writing "final verdict" statements as learnings; store the underlying durable pattern instead.
-
-Valid `save_knowledge_base` example:
-
-```json
-{
-  "learning": "Balance reconciliation flows always pass through WalletSyncService before TransactionService writes; bypassing this breaks downstream invalidation and audit semantics.",
-  "category": "service_call_chain",
-  "evidence": "Confirmed in changed controller and service paths where wallet sync triggers transaction updates and cache invalidation.",
-  "stability": "high",
-  "scope_tags": ["reconciliation", "wallet-sync", "transactions"],
-  "paths": ["server/api/controllers/blockchain-integrations/controller.js", "server/api/services/transactions.service.js"],
-  "symbols": ["syncWallet", "acceptRefetchDifferences"],
-  "source_pr": "{pr_url}"
-}
-```
 
 ### submit_review payload
 
