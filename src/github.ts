@@ -203,6 +203,81 @@ function githubReviewsToSummaries(
   });
 }
 
+export interface GithubIssueComment {
+  id: number;
+  body: string;
+  author: {
+    username?: string;
+    name?: string;
+  };
+  created_at: string;
+}
+
+/**
+ * Fetch general issue/PR conversation comments (not inline review comments).
+ * These are the top-level comments in the PR conversation timeline.
+ */
+export async function fetchGithubIssueComments(
+  owner: string,
+  repo: string,
+  prNumber: number | string,
+): Promise<GithubIssueComment[]> {
+  const raw = await execJson<Array<Record<string, unknown>>>("gh", [
+    "api",
+    `repos/${owner}/${repo}/issues/${prNumber}/comments`,
+    "--paginate",
+  ]);
+
+  return raw.map((node) => {
+    const user = ((node.user ?? node.author) as Record<string, string>) ?? {};
+    return {
+      id: (node.id as number) ?? 0,
+      body: (node.body as string) ?? "",
+      author: {
+        username: user.login ?? user.name,
+        name: user.name,
+      },
+      created_at: (node.created_at as string) ?? (node.createdAt as string) ?? "",
+    };
+  });
+}
+
+/**
+ * Fetch review submissions (the top-level review bodies, not inline comments).
+ * Each review has a body, state, and a submitted_at timestamp.
+ */
+export async function fetchGithubReviewComments(
+  owner: string,
+  repo: string,
+  prNumber: number | string,
+): Promise<Array<{
+  id: number;
+  body: string;
+  state: string;
+  author: { username?: string; name?: string };
+  submitted_at: string;
+}>> {
+  const raw = await execJson<Array<Record<string, unknown>>>("gh", [
+    "api",
+    `repos/${owner}/${repo}/pulls/${prNumber}/reviews`,
+    "--paginate",
+  ]);
+
+  return raw.map((node) => {
+    const user = ((node.user ?? node.author) as Record<string, string>) ?? {};
+    return {
+      id: (node.id as number) ?? 0,
+      body: (node.body as string) ?? "",
+      state: (node.state as string) ?? "",
+      author: {
+        username: user.login ?? user.name,
+        name: user.name,
+      },
+      submitted_at: (node.submitted_at as string) ?? (node.createdAt as string) ?? "",
+    };
+  });
+}
+
 function githubInlineReviewCommentsToEntries(
   comments:
     | Record<string, unknown>

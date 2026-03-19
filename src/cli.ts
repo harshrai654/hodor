@@ -4,7 +4,12 @@ import { Command } from "commander";
 import chalk from "chalk";
 import "dotenv/config";
 
-import { detectPlatform, postReviewComment, reviewPr } from "./agent.js";
+import {
+  detectPlatform,
+  parsePrUrl,
+  postReviewComment,
+  reviewPr,
+} from "./agent.js";
 import type { AgentProgressEvent } from "./agent.js";
 import { renderMarkdown } from "./render.js";
 import { setLogLevel } from "./utils/logger.js";
@@ -19,6 +24,10 @@ program
       "and analyzes the code using tools (gh, git, glab) for metadata fetching and comment posting.",
   )
   .version("0.3.4")
+  .enablePositionalOptions();
+
+// --- Default review command (hodor <pr-url>) ---
+program
   .argument("<pr-url>", "URL of the GitHub PR or GitLab MR to review")
   .option(
     "--model <model>",
@@ -30,11 +39,7 @@ program
     "Reasoning effort level: low, medium, high, xhigh",
   )
   .option("-v, --verbose", "Enable verbose logging", false)
-  .option(
-    "--post",
-    "Post the review directly to the PR/MR as a comment",
-    false,
-  )
+  .option("--post", "Post the review directly to the PR/MR as a comment", false)
   .option("--prompt <text>", "Custom inline prompt text")
   .option(
     "--prompt-file <path>",
@@ -60,7 +65,11 @@ program
     const ultrathink = cmdOpts.ultrathink as boolean;
 
     // Auto-detect CI environment
-    const isCI = !!(process.env.CI || process.env.GITLAB_CI || process.env.GITHUB_ACTIONS);
+    const isCI = !!(
+      process.env.CI ||
+      process.env.GITLAB_CI ||
+      process.env.GITHUB_ACTIONS
+    );
 
     if (verbose) setLogLevel("debug");
     else if (isCI) setLogLevel("info");
@@ -105,7 +114,8 @@ program
           const icon = toolIcons[event.toolName ?? ""] ?? event.toolName;
           const preview = event.toolArgs ? ` ${event.toolArgs}` : "";
           const maxLen = 160;
-          const truncated = preview.length > maxLen ? preview.slice(0, maxLen) + "…" : preview;
+          const truncated =
+            preview.length > maxLen ? preview.slice(0, maxLen) + "…" : preview;
           streamLog(chalk.green(`  ${icon}${truncated}`));
           break;
         }
@@ -163,7 +173,9 @@ program
           ),
         );
         console.error(
-          chalk.dim("  Set GITHUB_TOKEN environment variable or run: gh auth login\n"),
+          chalk.dim(
+            "  Set GITHUB_TOKEN environment variable or run: gh auth login\n",
+          ),
         );
       } else if (platform === "gitlab" && !gitlabToken) {
         console.error(
@@ -178,9 +190,7 @@ program
         );
       }
 
-      log(
-        `\n${chalk.bold.cyan("Hodor - AI Code Review Agent")}`,
-      );
+      log(`\n${chalk.bold.cyan("Hodor - AI Code Review Agent")}`);
       log(chalk.dim(`Platform: ${platform.toUpperCase()}`));
       log(chalk.dim(`PR URL: ${prUrl}`));
       log(chalk.dim(`Model: ${model}`));
@@ -219,9 +229,7 @@ program
           log(chalk.bold.green("Review posted successfully!"));
           log(chalk.dim(`  ${platform === "github" ? "PR" : "MR"}: ${prUrl}`));
         } else {
-          log(
-            chalk.bold.red(`Failed to post review: ${result.error}`),
-          );
+          log(chalk.bold.red(`Failed to post review: ${result.error}`));
           log(chalk.yellow("\nReview output:\n"));
           console.log(reviewText);
         }
@@ -236,6 +244,181 @@ program
       }
     } catch (err) {
       streamLog(chalk.red("✗ Review failed"));
+      console.error(
+        chalk.bold.red(`\nError: ${err instanceof Error ? err.message : err}`),
+      );
+      if (verbose && err instanceof Error && err.stack) {
+        console.error(chalk.dim(err.stack));
+      }
+      process.exit(1);
+    }
+  });
+
+// --- Learn subcommand (hodor learn <pr-url>) ---
+program
+  .command("learn")
+  .description(
+    "Learn from human feedback on a Hodor review.\n\n" +
+      "Fetches comments posted after Hodor's review on a PR/MR,\n" +
+      "extracts durable learnings from the feedback, and saves them\n" +
+      "to the knowledge base for improved future reviews.",
+  )
+  .argument("<pr-url>", "URL of the GitHub PR or GitLab MR to learn from")
+  .option(
+    "--model <model>",
+    "LLM model for feedback extraction",
+    "anthropic/claude-sonnet-4-5-20250929",
+  )
+  .option("-v, --verbose", "Enable verbose logging", false)
+  .option(
+    "--dry-run",
+    "Show what would be extracted without saving to the knowledge base",
+    false,
+  )
+  .action(async (prUrl: string, cmdOpts: Record<string, unknown>) => {
+    const verbose = cmdOpts.verbose as boolean;
+    const dryRun = cmdOpts.dryRun as boolean;
+    const model = cmdOpts.model as string;
+
+    if (verbose) setLogLevel("debug");
+
+    const log = console.log;
+
+    try {
+      const platform = detectPlatform(prUrl);
+      const parsed = parsePrUrl(prUrl);
+      const targetRepo = `${parsed.owner}/${parsed.repo}`;
+
+      log(`\n${chalk.bold.cyan("Hodor - Feedback Learning")}`);
+      log(chalk.dim(`Platform: ${platform.toUpperCase()}`));
+      log(chalk.dim(`PR URL: ${prUrl}`));
+      log(chalk.dim(`Model: ${model}`));
+      if (dryRun)
+        log(chalk.yellow("Dry run mode — no writes to knowledge base"));
+      log();
+
+      // Fetch feedback context
+      log(chalk.dim("▶ Fetching PR comments..."));
+      const { fetchFeedbackContext, runFeedbackExtraction } =
+        await import("./feedback.js");
+
+      const feedbackCtx = await fetchFeedbackContext(prUrl);
+      if (!feedbackCtx) {
+        log(chalk.yellow("No Hodor review comment found on this PR/MR."));
+        log(
+          chalk.dim(
+            '  Hodor identifies its reviews by the footer: "Review generated by Hodor"',
+          ),
+        );
+        process.exit(0);
+      }
+
+      log(
+        chalk.dim(
+          `  Found Hodor review posted at ${feedbackCtx.hodorReview.created_at}`,
+        ),
+      );
+      log(
+        chalk.dim(
+          `  Found ${feedbackCtx.feedbackComments.length} feedback comment(s) after the review`,
+        ),
+      );
+      if (feedbackCtx.preReviewComments.length > 0) {
+        log(
+          chalk.dim(
+            `  Found ${feedbackCtx.preReviewComments.length} pre-review comment(s) (included as context)`,
+          ),
+        );
+      }
+
+      if (feedbackCtx.feedbackComments.length === 0) {
+        log(
+          chalk.yellow(
+            "\nNo feedback comments found after Hodor's review. Nothing to learn.",
+          ),
+        );
+        process.exit(0);
+      }
+
+      log(chalk.dim("\n▶ Running feedback extraction..."));
+
+      const { getKnowledgeBaseConfig, checkKnowledgeBaseHealth } =
+        await import("./knowledge.js");
+
+      const kbConfig = getKnowledgeBaseConfig();
+
+      if (!dryRun) {
+        if (!kbConfig.enabled) {
+          log(chalk.red("Knowledge base is not enabled."));
+          log(
+            chalk.dim(
+              "  Set HODOR_KB_ENABLED=true, HODOR_QDRANT_URL, and HODOR_QDRANT_API_KEY",
+            ),
+          );
+          process.exit(1);
+        }
+
+        const health = await checkKnowledgeBaseHealth(kbConfig);
+        if (!health.ok) {
+          log(
+            chalk.red(`Knowledge base health check failed: ${health.reason}`),
+          );
+          process.exit(1);
+        }
+        if (!health.writable) {
+          log(
+            chalk.red(
+              "Knowledge base is not writable. Set HODOR_KB_WRITE_ENABLED=true",
+            ),
+          );
+          process.exit(1);
+        }
+      }
+
+      const result = await runFeedbackExtraction({
+        config: kbConfig,
+        targetRepo,
+        prUrl,
+        model,
+        feedbackContext: feedbackCtx,
+        dryRun,
+      });
+
+      log();
+      if (result.extracted === 0) {
+        log(chalk.yellow("No learnings could be extracted from the feedback."));
+      } else {
+        log(chalk.bold.green("Feedback extraction complete:"));
+        log(chalk.dim(`  Candidates extracted: ${result.extracted}`));
+        if (dryRun) {
+          log(chalk.dim(`  Would save: ${result.saved}`));
+          log(chalk.dim(`  Would reject: ${result.rejected}`));
+        } else {
+          log(chalk.dim(`  Saved (new): ${result.saved}`));
+          log(chalk.dim(`  Updated (merged): ${result.updated}`));
+          log(chalk.dim(`  Rejected: ${result.rejected}`));
+        }
+      }
+
+      if (result.errors.length > 0) {
+        log(chalk.yellow(`\n  Errors: ${result.errors.length}`));
+        for (const err of result.errors) {
+          log(chalk.dim(`    - ${err}`));
+        }
+      }
+
+      if (result.llmMetrics) {
+        log(
+          chalk.dim(
+            `\n  LLM tokens: ${result.llmMetrics.totalTokens} (${result.llmMetrics.durationSeconds}s)`,
+          ),
+        );
+        if (result.llmMetrics.cost > 0) {
+          log(chalk.dim(`  LLM cost: $${result.llmMetrics.cost.toFixed(4)}`));
+        }
+      }
+    } catch (err) {
+      log(chalk.red("✗ Feedback learning failed"));
       console.error(
         chalk.bold.red(`\nError: ${err instanceof Error ? err.message : err}`),
       );

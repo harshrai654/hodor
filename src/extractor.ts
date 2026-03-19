@@ -34,7 +34,10 @@ function buildExtractionPrompt(opts: {
     .replace(/\{review_output\}/g, opts.reviewOutput);
 }
 
-function truncateTranscript(messages: Array<{ role: string; content?: unknown }>, maxChars: number): string {
+function truncateTranscript(
+  messages: Array<{ role: string; content?: unknown }>,
+  maxChars: number,
+): string {
   const parts: string[] = [];
   let budget = maxChars;
 
@@ -67,7 +70,12 @@ interface PiModel {
   baseUrl: string;
   reasoning: boolean;
   input: ("text" | "image")[];
-  cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
+  cost: {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+  };
   contextWindow: number;
   maxTokens: number;
 }
@@ -76,7 +84,10 @@ function resolveExtractionModelName(reviewModel: string): string {
   return process.env.HODOR_KB_EXTRACT_MODEL?.trim() || reviewModel;
 }
 
-function resolveExtractionModel(modelName: string, reviewPiModel: PiModel): PiModel {
+function resolveExtractionModel(
+  modelName: string,
+  reviewPiModel: PiModel,
+): PiModel {
   const overrideModel = process.env.HODOR_KB_EXTRACT_MODEL?.trim();
   if (!overrideModel) return reviewPiModel;
 
@@ -135,7 +146,14 @@ function sumUsageFromSessionMessages(messages: unknown[]): UsageTotals {
     }
   }
 
-  return { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, totalTokens, cost };
+  return {
+    inputTokens,
+    outputTokens,
+    cacheReadTokens,
+    cacheWriteTokens,
+    totalTokens,
+    cost,
+  };
 }
 
 function parseExtractionResponse(raw: string): SaveKnowledgeInput[] {
@@ -149,10 +167,16 @@ function parseExtractionResponse(raw: string): SaveKnowledgeInput[] {
   }
   return parsed.map((item: Record<string, unknown>) => ({
     learning: String(item.learning ?? ""),
-    category: String(item.category ?? "coding_pattern") as SaveKnowledgeInput["category"],
+    category: String(
+      item.category ?? "coding_pattern",
+    ) as SaveKnowledgeInput["category"],
     evidence: String(item.evidence ?? ""),
-    stability: String(item.stability ?? "medium") as SaveKnowledgeInput["stability"],
-    scope_tags: Array.isArray(item.scope_tags) ? item.scope_tags.map(String) : [],
+    stability: String(
+      item.stability ?? "medium",
+    ) as SaveKnowledgeInput["stability"],
+    scope_tags: Array.isArray(item.scope_tags)
+      ? item.scope_tags.map(String)
+      : [],
     paths: Array.isArray(item.paths) ? item.paths.map(String) : undefined,
     symbols: Array.isArray(item.symbols) ? item.symbols.map(String) : undefined,
     source_pr: item.source_pr ? String(item.source_pr) : undefined,
@@ -211,7 +235,9 @@ export async function checkExtractionModelConnectivity(opts: {
 
     const { session } = await createAgentSession({
       cwd: process.cwd(),
-      model: piModel as ReturnType<typeof import("@mariozechner/pi-ai").getModel>,
+      model: piModel as ReturnType<
+        typeof import("@mariozechner/pi-ai").getModel
+      >,
       tools: [],
       customTools: [],
       sessionManager: SessionManager.inMemory(),
@@ -220,7 +246,8 @@ export async function checkExtractionModelConnectivity(opts: {
     });
     await session.prompt("Reply with OK.");
 
-    const agentError = (session as unknown as { state: { error?: string } }).state?.error;
+    const agentError = (session as unknown as { state: { error?: string } })
+      .state?.error;
     if (agentError) {
       return {
         ok: false,
@@ -256,7 +283,13 @@ export async function runKnowledgeExtraction(opts: {
   transcript: Array<{ role: string; content?: unknown }>;
   reviewOutput: string;
 }): Promise<ExtractionResult> {
-  const result: ExtractionResult = { extracted: 0, saved: 0, updated: 0, rejected: 0, errors: [] };
+  const result: ExtractionResult = {
+    extracted: 0,
+    saved: 0,
+    updated: 0,
+    rejected: 0,
+    errors: [],
+  };
 
   if (!opts.config.enabled || !opts.config.writeEnabled) {
     return result;
@@ -291,7 +324,8 @@ export async function runKnowledgeExtraction(opts: {
     const resourceLoader = new DefaultResourceLoader({
       cwd: process.cwd(),
       settingsManager,
-      systemPrompt: "You are a knowledge extraction assistant. Respond only with JSON.",
+      systemPrompt:
+        "You are a knowledge extraction assistant. Respond only with JSON.",
       appendSystemPrompt: "",
       noExtensions: true,
       noSkills: true,
@@ -304,7 +338,9 @@ export async function runKnowledgeExtraction(opts: {
 
     const { session } = await createAgentSession({
       cwd: process.cwd(),
-      model: piModel as ReturnType<typeof import("@mariozechner/pi-ai").getModel>,
+      model: piModel as ReturnType<
+        typeof import("@mariozechner/pi-ai").getModel
+      >,
       tools: [],
       customTools: [],
       sessionManager: SessionManager.inMemory(),
@@ -314,7 +350,8 @@ export async function runKnowledgeExtraction(opts: {
 
     await session.prompt(prompt);
 
-    const agentError = (session as unknown as { state: { error?: string } }).state?.error;
+    const agentError = (session as unknown as { state: { error?: string } })
+      .state?.error;
     if (agentError) {
       throw new Error(`Extraction LLM error: ${agentError}`);
     }
@@ -322,7 +359,8 @@ export async function runKnowledgeExtraction(opts: {
     const raw = session.getLastAssistantText() ?? "";
     const durationSeconds = Math.round((Date.now() - start) / 1000);
     const messages =
-      (session as unknown as { state: { messages?: unknown[] } }).state?.messages ?? [];
+      (session as unknown as { state: { messages?: unknown[] } }).state
+        ?.messages ?? [];
     const usage = sumUsageFromSessionMessages(messages);
     result.llmMetrics = { ...usage, durationSeconds };
 
@@ -345,7 +383,11 @@ export async function runKnowledgeExtraction(opts: {
     }
 
     try {
-      const saveResult = await saveKnowledgeBase(opts.config, opts.targetRepo, candidate);
+      const saveResult = await saveKnowledgeBase(
+        opts.config,
+        opts.targetRepo,
+        candidate,
+      );
       if (saveResult.ok) {
         if (saveResult.status === "saved") result.saved++;
         else if (saveResult.status === "updated") result.updated++;
