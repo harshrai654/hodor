@@ -13,8 +13,15 @@ import {
 } from "./agent.js";
 import type { AgentProgressEvent } from "./agent.js";
 import { renderMarkdown } from "./render.js";
-import { setLogLevel } from "./utils/logger.js";
+import { logger, setLogLevel } from "./utils/logger.js";
 import { formatKnowledgeExtractionMarkdown } from "./metrics.js";
+import { fetchGithubPrInfo } from "./github.js";
+import {
+  createCheckRun,
+  GitHubCheckRunProgress,
+  type GitHubCheckRunConclusion,
+} from "./github-checks.js";
+import { mapReviewEventToCheckStage } from "./review-check-stages.js";
 
 const program = new Command();
 
@@ -94,6 +101,12 @@ program
       save_knowledge_base: "kb+",
     };
 
+    const checksEnabled =
+      process.env.HODOR_GH_CHECKS === "1" ||
+      process.env.HODOR_GH_CHECKS === "true";
+    const checkTitle = "Hodor review";
+    let checkProgress: GitHubCheckRunProgress | null = null;
+
     /** Write a line to the log stream */
     function streamLog(msg: string): void {
       logStream.write(`${msg}\n`);
@@ -105,6 +118,7 @@ program
     }
 
     function handleEvent(event: AgentProgressEvent): void {
+      const checkUpdate = mapReviewEventToCheckStage(event);
       switch (event.type) {
         case "agent_start":
           streamLog(chalk.dim("▶ Agent started"));
@@ -157,6 +171,10 @@ program
           streamLog(chalk.dim("\n▶ Extracting review..."));
           break;
       }
+
+      if (checkUpdate) {
+        void checkProgress?.setStage(checkUpdate.stage, checkUpdate.summary);
+      }
     }
 
     try {
@@ -201,6 +219,59 @@ program
       }
       log();
 
+      if (checksEnabled && platform === "github" && githubToken) {
+        try {
+          const parsedForChecks = parsePrUrl(prUrl);
+          const prRaw = await fetchGithubPrInfo(
+            parsedForChecks.owner,
+            parsedForChecks.repo,
+            parsedForChecks.prNumber,
+          );
+          const headSha =
+            (prRaw.headRefOid as string | undefined) ??
+            (prRaw.headRefOid as unknown as string | undefined);
+
+          if (!headSha) {
+            logger.warn(
+              `Unable to determine PR head SHA for checks run (skipping): ${prUrl}`,
+            );
+          } else {
+            const serverUrl = process.env.GITHUB_SERVER_URL;
+            const repoFull = process.env.GITHUB_REPOSITORY;
+            const runId = process.env.GITHUB_RUN_ID;
+            const detailsUrl =
+              serverUrl && repoFull && runId
+                ? `${serverUrl}/${repoFull}/actions/runs/${runId}`
+                : undefined;
+
+            const checkRunId = await createCheckRun({
+              owner: parsedForChecks.owner,
+              repo: parsedForChecks.repo,
+              headSha,
+              name: checkTitle,
+              token: githubToken,
+              summary: "Analyzing PR…",
+              detailsUrl,
+            });
+            checkProgress = new GitHubCheckRunProgress({
+              owner: parsedForChecks.owner,
+              repo: parsedForChecks.repo,
+              token: githubToken,
+              checkRunId,
+              title: checkTitle,
+              throttleMs: 5000,
+            });
+            await checkProgress.setStage("Analyzing PR", "Analyzing PR");
+          }
+        } catch (err) {
+          logger.warn(
+            `Failed to initialize GitHub check run (continuing without checks): ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
+      }
+
       streamLog(chalk.dim("▶ Setting up workspace..."));
       const { review, metricsFooter, renderContext } = await reviewPr({
         prUrl,
@@ -219,6 +290,10 @@ program
 
       if (post) {
         log(chalk.cyan("\nPosting review to PR/MR..."));
+        await checkProgress?.setStage(
+          "Posting review to PR",
+          "Posting review to PR…",
+        );
 
         const result = await postReviewComment({
           prUrl,
@@ -230,10 +305,15 @@ program
         if (result.success) {
           log(chalk.bold.green("Review posted successfully!"));
           log(chalk.dim(`  ${platform === "github" ? "PR" : "MR"}: ${prUrl}`));
+          await checkProgress?.complete(
+            "success",
+            "Review generated and posted.",
+          );
         } else {
           log(chalk.bold.red(`Failed to post review: ${result.error}`));
           log(chalk.yellow("\nReview output:\n"));
           console.log(reviewText);
+          await checkProgress?.complete("failure", "Failed to post review.");
         }
       } else {
         log(chalk.bold.green("Review Complete\n"));
@@ -243,8 +323,10 @@ program
             "\nTip: Use --post to automatically post this review to the PR/MR",
           ),
         );
+        await checkProgress?.complete("success", "Review generated.");
       }
     } catch (err) {
+      await checkProgress?.complete("failure", "Hodor review failed.");
       streamLog(chalk.red("✗ Review failed"));
       console.error(
         chalk.bold.red(`\nError: ${err instanceof Error ? err.message : err}`),
@@ -286,6 +368,13 @@ program
 
     const log = console.log;
 
+    const checksEnabled =
+      process.env.HODOR_GH_CHECKS === "1" ||
+      process.env.HODOR_GH_CHECKS === "true";
+    const checkTitle = "Hodor learn";
+    const githubToken = process.env.GITHUB_TOKEN;
+    let checkProgress: GitHubCheckRunProgress | null = null;
+
     try {
       const platform = detectPlatform(prUrl);
       const parsed = parsePrUrl(prUrl);
@@ -299,8 +388,65 @@ program
         log(chalk.yellow("Dry run mode — no writes to knowledge base"));
       log();
 
+      if (checksEnabled && platform === "github" && githubToken) {
+        try {
+          const prRaw = await fetchGithubPrInfo(
+            parsed.owner,
+            parsed.repo,
+            parsed.prNumber,
+          );
+          const headSha = prRaw.headRefOid as string | undefined;
+          if (!headSha) {
+            logger.warn(
+              `Unable to determine PR head SHA for learn checks run (skipping): ${prUrl}`,
+            );
+          } else {
+            const serverUrl = process.env.GITHUB_SERVER_URL;
+            const repoFull = process.env.GITHUB_REPOSITORY;
+            const runId = process.env.GITHUB_RUN_ID;
+            const detailsUrl =
+              serverUrl && repoFull && runId
+                ? `${serverUrl}/${repoFull}/actions/runs/${runId}`
+                : undefined;
+
+            const checkRunId = await createCheckRun({
+              owner: parsed.owner,
+              repo: parsed.repo,
+              headSha,
+              name: checkTitle,
+              token: githubToken,
+              summary: "Fetching PR comments…",
+              detailsUrl,
+            });
+
+            checkProgress = new GitHubCheckRunProgress({
+              owner: parsed.owner,
+              repo: parsed.repo,
+              token: githubToken,
+              checkRunId,
+              title: checkTitle,
+              throttleMs: 5000,
+            });
+            await checkProgress.setStage(
+              "Fetching PR comments",
+              "Fetching PR comments…",
+            );
+          }
+        } catch (err) {
+          logger.warn(
+            `Failed to initialize GitHub check run (learn continuing without checks): ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
+      }
+
       // Fetch feedback context
       log(chalk.dim("▶ Fetching PR comments..."));
+      await checkProgress?.setStage(
+        "Fetching PR comments",
+        "Fetching PR comments…",
+      );
       const { fetchFeedbackContext, runFeedbackExtraction } =
         await import("./feedback.js");
 
@@ -312,7 +458,11 @@ program
             '  Hodor identifies its reviews by the footer: "Review generated by Hodor"',
           ),
         );
-        process.exit(0);
+        await checkProgress?.complete(
+          "success",
+          "No Hodor review found; nothing to learn.",
+        );
+        return;
       }
 
       log(
@@ -339,10 +489,18 @@ program
             "\nNo feedback comments found after Hodor's review. Nothing to learn.",
           ),
         );
-        process.exit(0);
+        await checkProgress?.complete(
+          "success",
+          "No feedback after Hodor review; nothing to learn.",
+        );
+        return;
       }
 
       log(chalk.dim("\n▶ Running feedback extraction..."));
+      await checkProgress?.setStage(
+        "Running feedback extraction",
+        "Running feedback extraction…",
+      );
 
       const { getKnowledgeBaseConfig, checkKnowledgeBaseHealth } =
         await import("./knowledge.js");
@@ -357,6 +515,10 @@ program
               "  Set HODOR_KB_ENABLED=true, HODOR_QDRANT_URL, and HODOR_QDRANT_API_KEY",
             ),
           );
+          await checkProgress?.complete(
+            "failure",
+            "Knowledge base not enabled; cannot learn.",
+          );
           process.exit(1);
         }
 
@@ -365,6 +527,10 @@ program
           log(
             chalk.red(`Knowledge base health check failed: ${health.reason}`),
           );
+          await checkProgress?.complete(
+            "failure",
+            "Knowledge base health check failed; cannot learn.",
+          );
           process.exit(1);
         }
         if (!health.writable) {
@@ -372,6 +538,10 @@ program
             chalk.red(
               "Knowledge base is not writable. Set HODOR_KB_WRITE_ENABLED=true",
             ),
+          );
+          await checkProgress?.complete(
+            "failure",
+            "Knowledge base not writable; cannot learn.",
           );
           process.exit(1);
         }
@@ -420,7 +590,13 @@ program
         }
       }
 
+      let feedbackPostedOk: boolean | null = null;
       if (result.learnings.length > 0) {
+        await checkProgress?.setStage(
+          "Posting feedback comment",
+          "Posting feedback comment…",
+        );
+
         const feedbackFooter = formatKnowledgeExtractionMarkdown({
           ...result,
           attempted: true,
@@ -432,6 +608,7 @@ program
           model,
         });
 
+        feedbackPostedOk = feedbackResult.success;
         if (feedbackResult.success) {
           log(chalk.bold.green("Review posted successfully!"));
           log(chalk.dim(`  ${platform === "github" ? "PR" : "MR"}: ${prUrl}`));
@@ -441,7 +618,35 @@ program
           console.log(feedbackFooter);
         }
       }
+
+      let checkConclusion: GitHubCheckRunConclusion = "success";
+      let checkSummary = "Feedback learning complete.";
+
+      if (result.extracted === 0) {
+        checkSummary = "Feedback extraction complete; no learnings produced.";
+      } else if (result.learnings.length === 0) {
+        checkSummary = "Feedback extraction complete; no learnings to save.";
+      } else {
+        checkSummary = "Learnings extracted.";
+      }
+
+      if (result.errors.length > 0) {
+        checkSummary = `Feedback extraction complete with ${result.errors.length} error(s).`;
+      }
+
+      if (feedbackPostedOk === false) {
+        checkConclusion = "failure";
+        checkSummary = "Learnings extracted, but failed to post feedback comment.";
+      }
+
+      if (checkProgress) {
+        await checkProgress.complete(checkConclusion, checkSummary);
+      }
     } catch (err) {
+      await checkProgress?.complete(
+        "failure",
+        "Hodor feedback learning failed.",
+      );
       log(chalk.red("✗ Feedback learning failed"));
       console.error(
         chalk.bold.red(`\nError: ${err instanceof Error ? err.message : err}`),

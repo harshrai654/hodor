@@ -56,6 +56,7 @@ permissions:
   contents: read
   pull-requests: write
   issues: write
+  checks: write
 
 jobs:
   review:
@@ -191,6 +192,7 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HODOR_GH_CHECKS: "1"
           # Do not rely on overriding GITHUB_* vars from workflow env.
           HODOR_BASE_REF: ${{ steps.pr.outputs.base_ref }}
           HODOR_KB_ENABLED: ${{ inputs.kb_enabled }}
