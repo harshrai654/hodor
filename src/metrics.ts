@@ -35,22 +35,23 @@ export function formatMetricsMarkdown(metrics: ReviewMetrics): string {
 
 export type KnowledgeExtractionFooter =
   | {
-    attempted: true;
-    extracted: number;
-    saved: number;
-    updated: number;
-    rejected: number;
-    errors: string[];
-    llmMetrics?: {
-      inputTokens: number;
-      outputTokens: number;
-      cacheReadTokens: number;
-      cacheWriteTokens: number;
-      totalTokens: number;
-      cost: number;
-      durationSeconds: number;
-    };
-  }
+      attempted: true;
+      extracted: number;
+      saved: number;
+      updated: number;
+      rejected: number;
+      errors: string[];
+      learnings: string[];
+      llmMetrics?: {
+        inputTokens: number;
+        outputTokens: number;
+        cacheReadTokens: number;
+        cacheWriteTokens: number;
+        totalTokens: number;
+        cost: number;
+        durationSeconds: number;
+      };
+    }
   | { attempted: false; skippedReason: string };
 
 export function formatKnowledgeExtractionMarkdown(
@@ -61,9 +62,19 @@ export function formatKnowledgeExtractionMarkdown(
   }
 
   const lines = [
-    `**Knowledge Extraction** — extracted \`${extraction.extracted}\`, saved \`${extraction.saved}\`, merged \`${extraction.updated}\`, rejected \`${extraction.rejected}\``
-    + (extraction.errors.length > 0 ? `, errors \`${extraction.errors.length}\`` : ""),
+    `**Knowledge Extraction** — extracted \`${extraction.extracted}\`, saved \`${extraction.saved}\`, merged \`${extraction.updated}\`, rejected \`${extraction.rejected}\`` +
+      (extraction.errors.length > 0
+        ? `, errors \`${extraction.errors.length}\``
+        : ""),
   ];
+
+  if (extraction.learnings.length > 0) {
+    lines.push("**Learnings saved:** \n");
+    for (const learning of extraction.learnings) {
+      lines.push(`- ${learning}`);
+    }
+    lines.push("\n");
+  }
 
   if (extraction.llmMetrics) {
     const m = extraction.llmMetrics;
@@ -72,11 +83,13 @@ export function formatKnowledgeExtractionMarkdown(
       `- Extraction LLM: in \`${tok(m.inputTokens)}\` | out \`${tok(m.outputTokens)}\` (total \`${tok(m.totalTokens)}\`, ${formatDuration(m.durationSeconds)}${costPart})`,
     );
   }
-
   return lines.join("\n");
 }
 
-export function printMetrics(metrics: ReviewMetrics, stream: NodeJS.WritableStream = process.stderr): void {
+export function printMetrics(
+  metrics: ReviewMetrics,
+  stream: NodeJS.WritableStream = process.stderr,
+): void {
   const dim = chalk.dim;
   const bold = chalk.bold;
   const cyan = chalk.cyan;
@@ -90,8 +103,13 @@ export function printMetrics(metrics: ReviewMetrics, stream: NodeJS.WritableStre
   let tokenLine = `${dim("Tokens:")}  ${bold(tok(metrics.inputTokens))} in`;
   if (metrics.cacheReadTokens > 0) {
     const fresh = metrics.inputTokens - metrics.cacheReadTokens;
-    const hitPct = ((metrics.cacheReadTokens / metrics.inputTokens) * 100).toFixed(0);
-    tokenLine += dim(` (${tok(metrics.cacheReadTokens)} cached ${hitPct}% · ${tok(fresh)} fresh)`);
+    const hitPct = (
+      (metrics.cacheReadTokens / metrics.inputTokens) *
+      100
+    ).toFixed(0);
+    tokenLine += dim(
+      ` (${tok(metrics.cacheReadTokens)} cached ${hitPct}% · ${tok(fresh)} fresh)`,
+    );
   }
   tokenLine += `  ${bold(tok(metrics.outputTokens))} out`;
   tokenLine += dim(`  (${tok(metrics.totalTokens)} total)`);

@@ -45,6 +45,7 @@ export interface FeedbackExtractionResult {
   updated: number;
   rejected: number;
   errors: string[];
+  learnings: string[];
   llmMetrics?: {
     inputTokens: number;
     outputTokens: number;
@@ -456,6 +457,7 @@ export async function runFeedbackExtraction(opts: {
     updated: 0,
     rejected: 0,
     errors: [],
+    learnings: [],
   };
 
   if (!opts.dryRun && (!opts.config.enabled || !opts.config.writeEnabled)) {
@@ -606,6 +608,7 @@ export async function runFeedbackExtraction(opts: {
         if (saveResult.ok) {
           if (saveResult.status === "saved") result.saved++;
           else if (saveResult.status === "updated") result.updated++;
+          result.learnings.push(candidate.learning);
         } else {
           result.rejected++;
           logger.info(`Feedback candidate save skipped: ${saveResult.reason}`);

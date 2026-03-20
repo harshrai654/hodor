@@ -189,6 +189,7 @@ export interface ExtractionResult {
   updated: number;
   rejected: number;
   errors: string[];
+  learnings: string[];
   llmMetrics?: {
     inputTokens: number;
     outputTokens: number;
@@ -289,6 +290,7 @@ export async function runKnowledgeExtraction(opts: {
     updated: 0,
     rejected: 0,
     errors: [],
+    learnings: [],
   };
 
   if (!opts.config.enabled || !opts.config.writeEnabled) {
@@ -391,6 +393,7 @@ export async function runKnowledgeExtraction(opts: {
       if (saveResult.ok) {
         if (saveResult.status === "saved") result.saved++;
         else if (saveResult.status === "updated") result.updated++;
+        result.learnings.push(candidate.learning);
       } else {
         result.rejected++;
         logger.info(`Extraction candidate save skipped: ${saveResult.reason}`);

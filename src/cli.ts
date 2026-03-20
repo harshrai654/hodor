@@ -7,12 +7,14 @@ import "dotenv/config";
 import {
   detectPlatform,
   parsePrUrl,
+  postFeedbackComment,
   postReviewComment,
   reviewPr,
 } from "./agent.js";
 import type { AgentProgressEvent } from "./agent.js";
 import { renderMarkdown } from "./render.js";
 import { setLogLevel } from "./utils/logger.js";
+import { formatKnowledgeExtractionMarkdown } from "./metrics.js";
 
 const program = new Command();
 
@@ -415,6 +417,28 @@ program
         );
         if (result.llmMetrics.cost > 0) {
           log(chalk.dim(`  LLM cost: $${result.llmMetrics.cost.toFixed(4)}`));
+        }
+      }
+
+      if (result.learnings.length > 0) {
+        const feedbackFooter = formatKnowledgeExtractionMarkdown({
+          ...result,
+          attempted: true,
+        });
+
+        const feedbackResult = await postFeedbackComment({
+          prUrl,
+          feedbackText: feedbackFooter,
+          model,
+        });
+
+        if (feedbackResult.success) {
+          log(chalk.bold.green("Review posted successfully!"));
+          log(chalk.dim(`  ${platform === "github" ? "PR" : "MR"}: ${prUrl}`));
+        } else {
+          log(chalk.bold.red(`Failed to post review: ${feedbackResult.error}`));
+          log(chalk.yellow("\nReview output:\n"));
+          console.log(feedbackFooter);
         }
       }
     } catch (err) {
