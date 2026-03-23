@@ -156,6 +156,9 @@ jobs:
             -e HODOR_KB_EMBEDDING_MODEL="${HODOR_KB_EMBEDDING_MODEL}" \
             -e HODOR_KB_DEDUP_THRESHOLD="${HODOR_KB_DEDUP_THRESHOLD}" \
             -e HODOR_KB_EXTRACT_MODEL="${HODOR_KB_EXTRACT_MODEL}" \
+            -e OPENAI_API_KEY="${OPENAI_API_KEY}" \
+            -e ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}" \
+            -e LLM_API_KEY="${LLM_API_KEY}" \
             -v "${GITHUB_WORKSPACE}:${GITHUB_WORKSPACE}" \
             -w "${GITHUB_WORKSPACE}" \
             "${HODOR_IMAGE}" \
