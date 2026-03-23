@@ -20,7 +20,7 @@ on:
         description: Repository containing Hodor source
         required: false
         type: string
-        default: mr-karan/hodor
+        default: KoinX-Tech/hodor
       kb_enabled:
         description: Enable Qdrant-backed knowledge base (true/false)
         required: false
@@ -54,6 +54,7 @@ on:
 
 permissions:
   contents: read
+  packages: read
   pull-requests: write
   issues: write
   checks: write
@@ -114,84 +115,13 @@ jobs:
           # GitHub CLI should already be available in ubuntu-latest
           gh --version
 
-      - name: Resolve inspect main SHA
-        id: inspect_sha
-        run: |
-          set -euo pipefail
-          inspect_sha="$(git ls-remote https://github.com/Ataraxy-Labs/inspect refs/heads/main | awk '{print $1}')"
-          if [ -z "${inspect_sha}" ]; then
-            echo "Failed to resolve inspect main SHA"
-            exit 1
-          fi
-          echo "sha=${inspect_sha}" >> "${GITHUB_OUTPUT}"
-          echo "INSPECT_GIT_SHA=${inspect_sha}" >> "${GITHUB_ENV}"
-
-      - name: Restore inspect binary cache
-        id: inspect_bin_cache
-        uses: actions/cache@v4
-        with:
-          path: ~/.local/bin/inspect
-          key: inspect-${{ runner.os }}-${{ steps.inspect_sha.outputs.sha }}
-
-      - name: Set up Rust toolchain
-        if: steps.inspect_bin_cache.outputs.cache-hit != 'true'
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Rust dependencies
-        if: steps.inspect_bin_cache.outputs.cache-hit != 'true'
-        uses: Swatinem/rust-cache@v2
-
-      - name: Build inspect CLI
-        if: steps.inspect_bin_cache.outputs.cache-hit != 'true'
-        run: |
-          set -euo pipefail
-          cargo install \
-            --git https://github.com/Ataraxy-Labs/inspect \
-            --rev "${INSPECT_GIT_SHA}" \
-            --locked \
-            --root /tmp/inspect-root \
-            inspect-cli
-          mkdir -p ~/.local/bin
-          cp /tmp/inspect-root/bin/inspect ~/.local/bin/inspect
-          chmod +x ~/.local/bin/inspect
-
-      - name: Add inspect to PATH
-        run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
-      - name: Verify inspect CLI
-        run: |
-          set -euo pipefail
-          inspect -h
-
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - name: Clone Hodor source
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          if [ -n "${GH_TOKEN}" ]; then
-            git clone "https://x-access-token:${GH_TOKEN}@github.com/${HODOR_REPO}.git" /tmp/hodor
-          else
-            git clone "https://github.com/${HODOR_REPO}.git" /tmp/hodor
-          fi
-
-      - name: Install and build Hodor
-        working-directory: /tmp/hodor
-        run: |
-          set -euo pipefail
-          bun install --frozen-lockfile || bun install
-          bun run build
-
       - name: Run Hodor review
         env:
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HODOR_GH_CHECKS: "1"
           # Do not rely on overriding GITHUB_* vars from workflow env.
           HODOR_BASE_REF: ${{ steps.pr.outputs.base_ref }}
@@ -206,19 +136,42 @@ jobs:
           CUSTOM_PROMPT: ${{ inputs.prompt }}
         run: |
           set -euo pipefail
-          cd /tmp/hodor
           pr_url="https://github.com/${REPO_NAME}/pull/${PR_NUMBER}"
-          args=(
-            "dist/cli.js"
+          HODOR_IMAGE="ghcr.io/$(echo "${HODOR_REPO}" | tr '[:upper:]' '[:lower:]'):latest"
+
+          echo "${GITHUB_TOKEN}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+          cmd=(
             "${pr_url}"
             "--model" "${LLM_MODEL}"
             "--post"
             "--verbose"
           )
           if [ -n "${CUSTOM_PROMPT}" ]; then
-            args+=("--prompt" "${CUSTOM_PROMPT}")
+            cmd+=("--prompt" "${CUSTOM_PROMPT}")
           fi
-          bun run "${args[@]}"
+
+          docker run --rm --user 0:0 \
+            -e GITHUB_ACTIONS="true" \
+            -e GITHUB_WORKSPACE="${GITHUB_WORKSPACE}" \
+            -e GITHUB_REPOSITORY="${GITHUB_REPOSITORY}" \
+            -e GITHUB_SERVER_URL="${GITHUB_SERVER_URL}" \
+            -e GITHUB_RUN_ID="${GITHUB_RUN_ID}" \
+            -e GITHUB_TOKEN="${GITHUB_TOKEN}" \
+            -e GH_TOKEN="${GH_TOKEN}" \
+            -e HODOR_GH_CHECKS="${HODOR_GH_CHECKS}" \
+            -e HODOR_BASE_REF="${HODOR_BASE_REF}" \
+            -e HODOR_KB_ENABLED="${HODOR_KB_ENABLED}" \
+            -e HODOR_QDRANT_URL="${HODOR_QDRANT_URL}" \
+            -e HODOR_QDRANT_API_KEY="${HODOR_QDRANT_API_KEY}" \
+            -e HODOR_KB_WRITE_ENABLED="${HODOR_KB_WRITE_ENABLED}" \
+            -e HODOR_KB_EMBEDDING_MODEL="${HODOR_KB_EMBEDDING_MODEL}" \
+            -e HODOR_KB_DEDUP_THRESHOLD="${HODOR_KB_DEDUP_THRESHOLD}" \
+            -e HODOR_KB_EXTRACT_MODEL="${HODOR_KB_EXTRACT_MODEL}" \
+            -v "${GITHUB_WORKSPACE}:${GITHUB_WORKSPACE}" \
+            -w "${GITHUB_WORKSPACE}" \
+            "${HODOR_IMAGE}" \
+            "${cmd[@]}"
 
       - name: Comment on failure
         if: failure()

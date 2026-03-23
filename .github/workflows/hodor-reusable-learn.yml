@@ -16,7 +16,7 @@ on:
         description: Repository containing Hodor source
         required: false
         type: string
-        default: mr-karan/hodor
+        default: KoinX-Tech/hodor
       dry_run:
         description: "Run in dry-run mode (true/false) — shows what would be saved without writing to KB"
         required: false
@@ -50,6 +50,7 @@ on:
 
 permissions:
   contents: read
+  packages: read
   # Needed because the learn pipeline posts a PR comment with the extracted learnings
   # (via `gh pr comment`, which uses the GraphQL `addComment` mutation).
   pull-requests: write
@@ -92,29 +93,6 @@ jobs:
             fi
           fi
 
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - name: Clone Hodor source
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          if [ -n "${GH_TOKEN}" ]; then
-            git clone "https://x-access-token:${GH_TOKEN}@github.com/${HODOR_REPO}.git" /tmp/hodor
-          else
-            git clone "https://github.com/${HODOR_REPO}.git" /tmp/hodor
-          fi
-
-      - name: Install and build Hodor
-        working-directory: /tmp/hodor
-        run: |
-          set -euo pipefail
-          bun install --frozen-lockfile || bun install
-          bun run build
-
       - name: Run Hodor learn
         env:
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
@@ -133,16 +111,38 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
-          cd /tmp/hodor
           pr_url="https://github.com/${REPO_NAME}/pull/${PR_NUMBER}"
-          args=(
-            "dist/cli.js"
+          HODOR_IMAGE="ghcr.io/$(echo "${HODOR_REPO}" | tr '[:upper:]' '[:lower:]'):latest"
+
+          echo "${GITHUB_TOKEN}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+          cmd=(
             "learn"
             "${pr_url}"
             "--model" "${LLM_MODEL}"
             "--verbose"
           )
           if [ "${DRY_RUN}" = "true" ]; then
-            args+=("--dry-run")
+            cmd+=("--dry-run")
           fi
-          bun run "${args[@]}"
+
+          docker run --rm --user 0:0 \
+            -e GITHUB_ACTIONS="true" \
+            -e GITHUB_WORKSPACE="${GITHUB_WORKSPACE}" \
+            -e GITHUB_REPOSITORY="${GITHUB_REPOSITORY}" \
+            -e GITHUB_SERVER_URL="${GITHUB_SERVER_URL}" \
+            -e GITHUB_RUN_ID="${GITHUB_RUN_ID}" \
+            -e GITHUB_TOKEN="${GITHUB_TOKEN}" \
+            -e GH_TOKEN="${GH_TOKEN}" \
+            -e HODOR_GH_CHECKS="${HODOR_GH_CHECKS}" \
+            -e HODOR_KB_ENABLED="${HODOR_KB_ENABLED}" \
+            -e HODOR_QDRANT_URL="${HODOR_QDRANT_URL}" \
+            -e HODOR_QDRANT_API_KEY="${HODOR_QDRANT_API_KEY}" \
+            -e HODOR_KB_WRITE_ENABLED="${HODOR_KB_WRITE_ENABLED}" \
+            -e HODOR_KB_EMBEDDING_MODEL="${HODOR_KB_EMBEDDING_MODEL}" \
+            -e HODOR_KB_DEDUP_THRESHOLD="${HODOR_KB_DEDUP_THRESHOLD}" \
+            -e HODOR_KB_EXTRACT_MODEL="${HODOR_KB_EXTRACT_MODEL}" \
+            -v "${GITHUB_WORKSPACE}:${GITHUB_WORKSPACE}" \
+            -w "${GITHUB_WORKSPACE}" \
+            "${HODOR_IMAGE}" \
+            "${cmd[@]}"

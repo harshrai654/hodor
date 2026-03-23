@@ -1,0 +1,64 @@
+name: Publish Docker Image to GHCR (Main)
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  publish:
+    name: Publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate image tags
+        id: tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          SAFE_REF_NAME="$(echo "${GITHUB_REF_NAME}" | tr '/_' '-')"
+          IMAGE_BASE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+          IMAGE_BASE="$(echo "$IMAGE_BASE" | tr '[A-Z]' '[a-z]')"
+          IMAGE_TAG="${SAFE_REF_NAME}-${GITHUB_SHA}"
+          LATEST_REF="latest-${SAFE_REF_NAME}"
+
+          echo "image_base=${IMAGE_BASE}" >> "$GITHUB_OUTPUT"
+          echo "image_tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "latest_ref=${LATEST_REF}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ steps.tag.outputs.image_base }}:${{ steps.tag.outputs.image_tag }}
+            ${{ steps.tag.outputs.image_base }}:${{ steps.tag.outputs.latest_ref }}
+            ${{ steps.tag.outputs.image_base }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

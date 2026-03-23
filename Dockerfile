@@ -22,6 +22,35 @@ COPY src ./src
 COPY templates ./templates
 RUN bun run build
 
+# Build inspect CLI (used by the agent runtime)
+FROM rust:1.78-slim AS inspect-build
+ARG INSPECT_GIT_URL="https://github.com/Ataraxy-Labs/inspect"
+ARG INSPECT_GIT_REV=""
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        git \
+        ca-certificates \
+        pkg-config \
+        libssl-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN set -euo pipefail && \
+    if [ -n "${INSPECT_GIT_REV}" ]; then \
+      cargo install \
+        --git "${INSPECT_GIT_URL}" \
+        --rev "${INSPECT_GIT_REV}" \
+        --locked \
+        --root /tmp/inspect-root \
+        inspect-cli ; \
+    else \
+      cargo install \
+        --git "${INSPECT_GIT_URL}" \
+        --locked \
+        --root /tmp/inspect-root \
+        inspect-cli ; \
+    fi
+
 # Final stage
 FROM oven/bun:1-slim
 
@@ -60,6 +89,9 @@ RUN curl -fsSL "https://gitlab.com/gitlab-org/cli/-/releases/v1.77.0/downloads/g
 
 WORKDIR /app
 
+# Copy inspect binary into the final image
+COPY --from=inspect-build /tmp/inspect-root/bin/inspect /usr/local/bin/inspect
+
 # Copy built application and production deps
 COPY --from=install /temp/prod/node_modules node_modules
 COPY --from=build /build/dist ./dist
@@ -74,12 +106,6 @@ ENV LINES=50
 RUN mkdir -p /workspace /tmp/hodor && \
     chown -R bun:bun /app /workspace /tmp/hodor
 
-LABEL org.opencontainers.image.title="Hodor" \
-      org.opencontainers.image.description="AI-powered code review agent for GitHub and GitLab" \
-      org.opencontainers.image.url="https://github.com/mr-karan/hodor" \
-      org.opencontainers.image.source="https://github.com/mr-karan/hodor" \
-      org.opencontainers.image.vendor="Karan Sharma" \
-      org.opencontainers.image.licenses="MIT"
 
 USER bun
 
