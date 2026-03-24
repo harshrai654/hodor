@@ -95,14 +95,18 @@ export function buildEmbeddingInput(entry: {
   evidence: string;
   scope_tags?: string[];
   paths?: string[];
+  symbols?: string[];
+  category?: string;
   answers_query?: string;
 }): string {
   const parts = [
     entry.answers_query ? `${entry.answers_query}\n\n` : "",
+    entry.category ? `[${entry.category}] ` : "",
     entry.learning,
     entry.evidence,
   ];
   if (entry.scope_tags?.length) parts.push(entry.scope_tags.join(" "));
   if (entry.paths?.length) parts.push(entry.paths.join(" "));
+  if (entry.symbols?.length) parts.push(entry.symbols.join(" "));
   return parts.join(" ");
 }

@@ -91,7 +91,7 @@ describe("knowledge base config", () => {
     const config = getKnowledgeBaseConfig();
     expect(config.enabled).toBe(true);
     expect(config.qdrantUrl).toBe("https://test-qdrant.example.com");
-    expect(config.dedupThreshold).toBe(0.92);
+    expect(config.dedupThreshold).toBe(0.85);
   });
 
   it("respects custom dedup threshold", () => {

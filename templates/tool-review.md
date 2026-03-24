@@ -102,15 +102,34 @@ Any file not covered by `inspect` (YAML, configs, markdown, test fixtures) must 
 
 **Step 1c — Query durable prior knowledge (MANDATORY):**
 
-- After inspect output and changed file list are known, you MUST call `query_knowledge_base` at least once before moving to Phase 2.
-- First query should include:
-  - a focused query about architecture/service flow in this PR
-  - optional `paths` and `symbols` from high-risk entities
-- During Phase 2 and Phase 3, you may call `query_knowledge_base` again whenever deeper context is needed.
-- Treat retrieved knowledge as context, not truth. Confirm against current diff before relying on it.
-- Maintain a lightweight question ledger while reviewing:
-  - when a query returns no match, keep the question open and continue investigation in code/diff
-  - before submission, close every open question with evidence-backed conclusions from current analysis
+The knowledge base is indexed by the question each learning was extracted to answer. **Queries that match those questions score highest.** Write each query as a short, single-concern question — the same way a human would search a wiki: _"How must service singletons be exported?"_ not _"Tell me about services and Redis and error handling in this PR."_
+
+**How to form queries:**
+
+- One question per call, 10–20 words max.
+- Phrase as a direct question about the repo's design: _"What pattern governs MongoDB access?"_ / _"How should custom errors be thrown in service classes?"_ / _"What is the correct Redis client for cache operations?"_
+- Scope to a subsystem or file type, not to this specific PR's changes.
+- Pass `paths` and `symbols` from high-risk entities to boost matching precision.
+
+**How many queries to run:**
+
+From the `inspect` output and changed file list, identify every distinct subsystem or pattern the PR touches. Issue **one query per subsystem** — do not batch multiple concerns into one call. For a typical PR touching 2–4 subsystems, that means 2–4 queries upfront. Common examples:
+
+| PR touches…              | Example query                                                                |
+| ------------------------ | ---------------------------------------------------------------------------- |
+| Service files            | _"How must service classes export their singleton instance?"_                |
+| Repository / data access | _"What pattern governs MongoDB access in this repo?"_                        |
+| Redis usage              | _"Which Redis client should be used for cache vs persistent KV operations?"_ |
+| Error handling           | _"What error classes must be thrown instead of generic Error?"_              |
+| NATS / event messaging   | _"How must events be registered before publishing to NATS?"_                 |
+| Worker files             | _"How are worker pool tasks submitted and how do they report errors?"_       |
+
+**After each query:**
+
+- Matches returned: treat as context, not truth — confirm against the current diff before relying on them.
+- No match: note the open question in a lightweight ledger. Before submission, close every open question with an evidence-backed conclusion drawn from code and diff.
+
+**During Phase 2 and Phase 3**, call `query_knowledge_base` again whenever you encounter a pattern or subsystem not yet queried. The goal is zero unqueried high-risk subsystems before submission.
 
 **Step 1d — Load repository conventions from AGENTS.md (MANDATORY when available):**
 

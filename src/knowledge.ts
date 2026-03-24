@@ -19,7 +19,7 @@ import {
 import { logger } from "./utils/logger.js";
 
 const KB_COLLECTION = "hodor-kb";
-const DEFAULT_DEDUP_THRESHOLD = 0.92;
+const DEFAULT_DEDUP_THRESHOLD = 0.85;
 const KB_FILTER_INDEX_FIELDS = ["target_repo"] as const;
 
 export const QUERY_KNOWLEDGE_BASE_SCHEMA = Type.Object(
