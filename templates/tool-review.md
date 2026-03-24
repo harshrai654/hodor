@@ -18,9 +18,9 @@ Identify production bugs and high-signal maintainability issues in the PR's diff
 
 ### inspect — semantic triage (run first)
 
-| Command               | Purpose                                                                                                  |
-| --------------------- | -------------------------------------------------------------------------------------------------------- |
-| `{inspect_diff_cmd}`  | Risk-sorted entity map with blast radius, classification, and verdict for the whole PR. Run this first.  |
+| Command              | Purpose                                                                                                 |
+| -------------------- | ------------------------------------------------------------------------------------------------------- |
+| `{inspect_diff_cmd}` | Risk-sorted entity map with blast radius, classification, and verdict for the whole PR. Run this first. |
 
 `inspect` output includes per-entity:
 
@@ -38,11 +38,11 @@ It also emits a **verdict**: `likely_approvable` · `standard_review` · `requir
 
 ### git — line-level evidence (run after inspect)
 
-| Command                          | Purpose                                                                                          |
-| -------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `export GIT_PAGER=cat`           | Disable interactive pager. Run once at start.                                                    |
-| `{pr_diff_cmd}`                  | List all changed filenames. Catches non-code files inspect may skip (YAML, configs, test data).  |
-| `{git_diff_cmd} -- path/to/file` | Line-level diff for one file. Use to get `+`/`-` lines and exact line numbers for findings.      |
+| Command                          | Purpose                                                                                         |
+| -------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `export GIT_PAGER=cat`           | Disable interactive pager. Run once at start.                                                   |
+| `{pr_diff_cmd}`                  | List all changed filenames. Catches non-code files inspect may skip (YAML, configs, test data). |
+| `{git_diff_cmd} -- path/to/file` | Line-level diff for one file. Use to get `+`/`-` lines and exact line numbers for findings.     |
 
 {diff_explanation}
 
@@ -56,12 +56,12 @@ The `+new_start` value is the first new-file line number in that hunk. Count for
 
 ### Other tools
 
-| Command | Purpose |
-| --- | --- |
-| `grep` | Search for patterns across multiple files |
-| `read` | Read full file context (use sparingly, only when git diff is insufficient) |
+| Command                | Purpose                                                                                                       |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `grep`                 | Search for patterns across multiple files                                                                     |
+| `read`                 | Read full file context (use sparingly, only when git diff is insufficient)                                    |
 | `query_knowledge_base` | Retrieve durable prior learnings (architecture, stable call chains, coding patterns) relevant to current diff |
-| `submit_review` | Submit the final structured review |
+| `submit_review`        | Submit the final structured review                                                                            |
 
 **Execution style constraints (MANDATORY):**
 
@@ -112,11 +112,44 @@ Any file not covered by `inspect` (YAML, configs, markdown, test fixtures) must 
   - when a query returns no match, keep the question open and continue investigation in code/diff
   - before submission, close every open question with evidence-backed conclusions from current analysis
 
-**Step 1d — Load repository conventions (MANDATORY when available):**
+**Step 1d — Load repository conventions from AGENTS.md (MANDATORY when available):**
 
-- Check whether an `AGENTS.md` file exists at the workspace root using `read AGENTS.md` (do NOT use find or search the filesystem for it).
-- If present, treat it as authoritative project guidance for review criteria (architecture constraints, coding standards, testing expectations, workflow rules).
-- Only raise convention-related findings when the diff clearly violates guidance from `AGENTS.md` or other explicit in-repo standards.
+This step has two sub-passes that happen at different points in your workflow. Do not collapse them into one.
+
+**Pass 1 — Read AGENTS.md immediately (before inspect):**
+
+```bash
+read AGENTS.md
+```
+
+Do NOT use `find` or search the filesystem for it — attempt a direct read at the workspace root only. If the file does not exist, skip both passes and proceed normally.
+
+If present:
+
+- Parse the document structure map / TOC to understand which documentation files exist in the repo and what each one covers.
+- Extract any PR review checklists, golden rules, file naming conventions, and coding standards listed directly in `AGENTS.md`.
+- Store this as your baseline convention reference for the entire review. These guidelines are authoritative — only raise convention-related findings when the diff clearly violates them.
+- Do **not** yet load the linked documentation files; wait until the PR scope is known from `inspect` and `{pr_diff_cmd}`.
+
+**Pass 2 — Load PR-relevant documentation (after Step 1a and Step 1b are complete):**
+
+Once you know which files and entities the PR touches, cross-reference against the AGENTS.md TOC to identify which documentation files are directly relevant. Apply this selection logic:
+
+| PR touches…                        | Load these docs                                        |
+| ---------------------------------- | ------------------------------------------------------ |
+| Service files (`services/`)        | Service pattern doc, coding guidelines                 |
+| Repository files (`repositories/`) | Repository pattern doc                                 |
+| Infrastructure or config files     | Corresponding infra doc (e.g., Redis, NATS, MongoDB)   |
+| Error handling                     | Error pattern doc                                      |
+| New features / feature flags       | Coding guidelines, any feature flag doc                |
+| Worker or background job files     | Worker pattern doc                                     |
+| Any changed file                   | Coding guidelines (always load if listed in AGENTS.md) |
+
+Load each relevant doc with `read <path>`. Keep reads scoped — only load what the PR scope justifies. Record which docs you loaded so you can cite them in findings.
+
+During **Phase 2**, if you encounter a code pattern or subsystem you did not anticipate in Pass 2, load its corresponding documentation then before forming a finding.
+
+---
 
 ### Phase 2: Targeted Code Analysis
 
@@ -143,6 +176,10 @@ The `blast` score and `deps` field already tell you what is affected. Use `grep`
 grep -n "<entityName>" path/to/caller/file
 ```
 
+**Checking against loaded documentation:**
+
+When reviewing a diff, actively compare the new code against patterns and rules from the docs loaded in Step 1d. Flag deviations that meet the High-Signal Maintainability Criteria below. Always cite the specific doc and rule, not just a general "this violates conventions" statement.
+
 **Critical rules:**
 
 - ONLY analyze files that appear in `{pr_diff_cmd}` output
@@ -162,6 +199,8 @@ grep <pattern> <path>   # search for patterns across files
 Use these only when the git diff alone cannot answer a question about context, shared state, or whether a caller is affected.
 
 When investigating architecture or call-chain behavior, prefer `query_knowledge_base` before broad `grep`/`read` exploration.
+
+If a new subsystem surfaces in Phase 3 that was not covered by Step 1d Pass 2, load its documentation from the AGENTS.md TOC now before forming a finding.
 
 **Analysis focus:**
 
@@ -226,7 +265,7 @@ Output all findings that the original author would fix if they knew about it. If
 
 - Ignore trivial style unless it obscures meaning or violates documented standards.
 - Flag high-signal duplication/DRY issues when they introduce meaningful ongoing maintenance cost (do not report tiny or intentional duplication).
-- Prefer convention-aware feedback: if `AGENTS.md` or repo docs define a standard and the PR diverges in a risky way, call it out with explicit evidence.
+- Prefer convention-aware feedback: if `AGENTS.md` or repo docs define a standard and the PR diverges in a risky way, call it out with explicit evidence from the loaded documentation.
 - If prior review feedback is provided, evaluate those claims against the current diff and evidence; explicitly agree/disagree when relevant.
 - Keep prior-review references anonymous in final output: do not use reviewer names or `@mentions`; use phrases like "earlier feedback" or "a previous review comment".
 - Use one comment per distinct issue (or a multi-line range if necessary).
@@ -244,7 +283,7 @@ Before calling `submit_review`, include concise context fields so authors can va
 
 - `pr_understanding`: 2-4 bullets on PR intent and scope
 - `change_summary`: 2-5 bullets of concrete behavior/code-path changes seen in diff
-- `analysis_scope`: 2-5 bullets listing what you reviewed and any notable exclusions
+- `analysis_scope`: 2-5 bullets listing what you reviewed and any notable exclusions; include which AGENTS.md-linked docs were loaded
 - `prior_feedback_resolution`: required when prior review comments are provided; 1-3 bullets summarizing which earlier feedback you agree/disagree with and why
 - `maintainability_assessment`: required single sentence: either summarize high-signal maintainability concerns found, or explicitly state none were found
 - `confidence_notes` (optional): assumptions, uncertainty, or follow-up caveats
@@ -288,4 +327,4 @@ Before calling `submit_review`, include concise context fields so authors can va
 - The title must start with a priority tag: `[P0]`, `[P1]`, `[P2]`, or `[P3]`.
 - `overall_correctness` must be exactly `"patch is correct"` or `"patch is incorrect"`.
 
-Start your review by running `export GIT_PAGER=cat` and `{inspect_diff_cmd}` to get the risk-sorted entity map and verdict, then follow Phase 1 → Phase 2 → Phase 3 in order.
+Start your review by running `export GIT_PAGER=cat`, then `read AGENTS.md` (Step 1d Pass 1), then `{inspect_diff_cmd}` to get the risk-sorted entity map and verdict. Follow Phase 1 → Phase 2 → Phase 3 in order.
