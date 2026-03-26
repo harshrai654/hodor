@@ -75,6 +75,17 @@ RUN curl -fsSL "https://github.com/BurntSushi/ripgrep/releases/download/15.1.0/r
     dpkg -i /tmp/ripgrep.deb && \
     rm /tmp/ripgrep.deb
 
+# Install RTK (Rust Token Killer) - version pinned with SHA256 verification
+ARG RTK_VERSION="0.34.0"
+ARG RTK_SHA256="51b5c797ff75d26070d40ab883dd1dbeb644384918aba12f667c1dcc063c5dd3"
+
+RUN curl -fsSL "https://github.com/rtk-ai/rtk/releases/download/v${RTK_VERSION}/rtk-x86_64-unknown-linux-musl.tar.gz" -o /tmp/rtk.tar.gz && \
+    echo "${RTK_SHA256}  /tmp/rtk.tar.gz" | sha256sum -c - && \
+    tar -xzf /tmp/rtk.tar.gz -C /tmp && \
+    mv /tmp/rtk /usr/local/bin/ && \
+    rm /tmp/rtk.tar.gz && \
+    rtk --version
+
 # Install GitHub CLI (gh)
 RUN curl -fsSL "https://github.com/cli/cli/releases/download/v2.83.0/gh_2.83.0_linux_amd64.tar.gz" -o /tmp/gh.tar.gz && \
     tar -xzf /tmp/gh.tar.gz -C /tmp && \

@@ -12,7 +12,6 @@ vi.mock("../src/vector-store.js", () => ({
   ensureCollection: vi.fn(),
   ensurePayloadIndex: vi.fn().mockResolvedValue(undefined),
   upsertPoints: vi.fn(),
-  updatePayload: vi.fn(),
   searchPoints: vi.fn().mockResolvedValue([]),
   deletePoints: vi.fn(),
   checkHealth: vi.fn().mockResolvedValue(true),
@@ -27,7 +26,7 @@ vi.mock("../src/embeddings.js", () => ({
   EMBEDDING_DIMENSION: 1536,
 }));
 
-import { searchPoints, upsertPoints, updatePayload, checkHealth, collectionExists } from "../src/vector-store.js";
+import { searchPoints, upsertPoints, checkHealth, collectionExists } from "../src/vector-store.js";
 import { embedText } from "../src/embeddings.js";
 
 const ENV_KEYS = [
@@ -201,7 +200,7 @@ describe("saveKnowledgeBase", () => {
     expect(upsertPoints).toHaveBeenCalledOnce();
   });
 
-  it("merges into existing point when semantic duplicate found (score >= threshold)", async () => {
+  it("updates existing point when semantic duplicate found (score >= threshold)", async () => {
     configureKb();
     vi.mocked(searchPoints).mockResolvedValueOnce([
       {
@@ -215,6 +214,8 @@ describe("saveKnowledgeBase", () => {
           symbols: ["OrderService.createOrder"],
           scope_tags: ["orders"],
           source_prs: ["https://github.com/acme/service-api/pull/40"],
+          created_at: "2026-03-01T00:00:00Z",
+          updated_at: "2026-03-10T00:00:00Z",
         },
       },
     ]);
@@ -232,11 +233,14 @@ describe("saveKnowledgeBase", () => {
     expect(result.status).toBe("updated");
     expect(result.ok).toBe(true);
     expect(result.entryId).toBe("existing-point-uuid");
-    expect(updatePayload).toHaveBeenCalledOnce();
-    const payloadArg = vi.mocked(updatePayload).mock.calls[0][3] as Record<string, unknown>;
-    expect(payloadArg.observations).toBe(3);
-    expect(payloadArg.paths).toContain("src/services/ledger.ts");
-    expect(payloadArg.source_prs).toContain("https://github.com/acme/service-api/pull/42");
+    expect(upsertPoints).toHaveBeenCalled();
+    const upsertCall = vi.mocked(upsertPoints).mock.calls;
+    expect(upsertCall.length).toBeGreaterThan(0);
+    const upsertedPoint = upsertCall[0][2][0];
+    expect(upsertedPoint.id).toBe("existing-point-uuid");
+    expect(upsertedPoint.payload.observations).toBe(3);
+    expect(upsertedPoint.payload.paths).toContain("src/services/ledger.ts");
+    expect(upsertedPoint.payload.source_prs).toContain("https://github.com/acme/service-api/pull/42");
   });
 });
 
@@ -282,7 +286,7 @@ describe("queryKnowledgeBase", () => {
     expect(embedText).toHaveBeenCalledWith("tenant auth context flow");
   });
 
-  it("filters by paths when specified", async () => {
+  it("filters by paths when specified, with fallback when no match", async () => {
     configureKb();
     vi.mocked(searchPoints).mockResolvedValueOnce([
       {
@@ -302,12 +306,14 @@ describe("queryKnowledgeBase", () => {
       },
     ]);
     const config = getKnowledgeBaseConfig();
-    const noMatch = await queryKnowledgeBase(config, "acme/service-api", {
+    const result = await queryKnowledgeBase(config, "acme/service-api", {
       query: "tenant auth flow",
       paths: ["src/handlers/orders.ts"],
       max_results: 3,
     });
-    expect(noMatch.matches).toHaveLength(0);
+    expect(result.ok).toBe(true);
+    expect(result.pathSymbolFallback).toBe(true);
+    expect(result.matches).toHaveLength(1);
   });
 
   it("handles embedding failure gracefully", async () => {

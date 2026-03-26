@@ -22,8 +22,23 @@ import {
   type GitHubCheckRunConclusion,
 } from "./github-checks.js";
 import { mapReviewEventToCheckStage } from "./review-check-stages.js";
+import { exec } from "./utils/exec.js";
 
 const program = new Command();
+
+async function showRtkGains(): Promise<void> {
+  try {
+    const { stdout } = await exec("rtk", ["gain"]);
+    if (stdout.trim()) {
+      console.log(chalk.dim("\n────────────────────────────────────────────────────────────"));
+      console.log(chalk.cyan.bold("RTK Token Savings Report"));
+      console.log(chalk.dim("────────────────────────────────────────────────────────────\n"));
+      console.log(stdout);
+    }
+  } catch {
+    // RTK not available or error - silently skip
+  }
+}
 
 program
   .name("hodor")
@@ -305,6 +320,7 @@ program
         if (result.success) {
           log(chalk.bold.green("Review posted successfully!"));
           log(chalk.dim(`  ${platform === "github" ? "PR" : "MR"}: ${prUrl}`));
+          await showRtkGains();
           await checkProgress?.complete(
             "success",
             "Review generated and posted.",
@@ -313,6 +329,7 @@ program
           log(chalk.bold.red(`Failed to post review: ${result.error}`));
           log(chalk.yellow("\nReview output:\n"));
           console.log(reviewText);
+          await showRtkGains();
           await checkProgress?.complete("failure", "Failed to post review.");
         }
       } else {
@@ -323,6 +340,7 @@ program
             "\nTip: Use --post to automatically post this review to the PR/MR",
           ),
         );
+        await showRtkGains();
         await checkProgress?.complete("success", "Review generated.");
       }
     } catch (err) {

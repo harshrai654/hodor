@@ -108,9 +108,8 @@ describe("buildPrReviewPrompt", () => {
     expect(prompt).toContain("query_knowledge_base");
     expect(prompt).not.toContain("save_knowledge_base");
     expect(prompt).toContain(
-      "Step 1c — Query durable prior knowledge (MANDATORY)",
+      "Step 1c — Query the knowledge base (MANDATORY — complete before Step 1d):",
     );
-    expect(prompt).toContain("MUST call `query_knowledge_base` at least once");
     expect(prompt).toContain("pr_understanding");
     expect(prompt).toContain("change_summary");
     expect(prompt).toContain("analysis_scope");
