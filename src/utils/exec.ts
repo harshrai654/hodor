@@ -14,8 +14,28 @@ export async function exec(
   args: string[],
   opts?: { cwd?: string; env?: NodeJS.ProcessEnv },
 ): Promise<ExecResult> {
-  const rtkCmd = isRtkCompatibleCommand(cmd) ? `rtk ${cmd}` : cmd;
-  const { stdout, stderr } = await execFileAsync(rtkCmd, args, {
+  // `execFile` does NOT run through a shell, so the "file" argument must be
+  // an actual executable path (no spaces like "rtk gh").
+  //
+  // RTK is invoked as: `rtk <subcommand> <...originalArgs>`
+  // If the caller already asked for `rtk ...`, don't double-wrap.
+  const shouldWrapWithRtk = cmd !== "rtk" && isRtkCompatibleCommand(cmd);
+
+  // Allow `cmd` to contain extra flags by splitting it into:
+  // - RTK subcommand (first token)
+  // - additional tokens (middle tokens)
+  // - followed by the provided `args`
+  const cmdParts = cmd.trim().split(/\s+/);
+  const rtkSubcommand = cmdParts[0];
+  const cmdRemainderArgs = cmdParts.slice(1);
+
+  const { stdout, stderr } = shouldWrapWithRtk
+    ? await execFileAsync("rtk", [rtkSubcommand, ...cmdRemainderArgs, ...args], {
+        cwd: opts?.cwd,
+        env: opts?.env ?? process.env,
+        maxBuffer: 50 * 1024 * 1024, // 50MB
+      })
+    : await execFileAsync(cmd, args, {
     cwd: opts?.cwd,
     env: opts?.env ?? process.env,
     maxBuffer: 50 * 1024 * 1024, // 50MB
