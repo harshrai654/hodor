@@ -38,11 +38,11 @@ It also emits a **verdict**: `likely_approvable` · `standard_review` · `requir
 
 ### git — line-level evidence (run after inspect)
 
-| Command                          | Purpose                                                                                         |
-| -------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `export GIT_PAGER=cat`           | Disable interactive pager. Run once at start.                                                   |
-| `{pr_diff_cmd}`                  | List all changed filenames. Catches non-code files inspect may skip (YAML, configs, test data). |
-| `{git_diff_cmd} -- path/to/file` | Line-level diff for one file. Use to get `+`/`-` lines and exact line numbers for findings.     |
+| Command                          | Purpose                                                                                                       |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `export GIT_PAGER=cat`           | Disable interactive pager. Run once at start **in its own bash tool call (do not batch with other commands)**. |
+| `{pr_diff_cmd}`                  | List all changed filenames. Catches non-code files inspect may skip (YAML, configs, test data).               |
+| `{git_diff_cmd} -- path/to/file` | Line-level diff for one file. Use to get `+`/`-` lines and exact line numbers for findings.                   |
 
 {diff_explanation}
 
@@ -86,8 +86,13 @@ The `+new_start` value is the first new-file line number in that hunk. Count for
 
 **Step 1a — Get risk-sorted entity map and verdict:**
 
+Run **each shell command in a separate bash tool call** so that `git`-based commands can be wrapped by RTK:
+
 ```bash
 export GIT_PAGER=cat
+```
+
+```bash
 {inspect_diff_cmd}
 ```
 
@@ -102,6 +107,8 @@ From the entity list, build your review agenda ordered by risk. Note each entity
 <!-- CHANGED: Step 1b unchanged -->
 
 **Step 1b — Get complete file list:**
+
+Run `{pr_diff_cmd}` as its **own** bash tool call (do not batch it with other commands):
 
 ```bash
 {pr_diff_cmd}
@@ -207,6 +214,8 @@ Example: if you are about to flag a bug in `PaymentService.settle()`, first quer
 - **MEDIUM, classification `functional`**: Run `git diff`
 - **MEDIUM, classification `syntax` or `text`**: Skip unless blast radius > 5 or it is a public API
 - **LOW / cosmetic**: Not shown in output (`--min-risk medium` filtered them) — skip entirely
+
+Run each `{git_diff_cmd}` invocation as a **single-command bash tool call**:
 
 ```bash
 {git_diff_cmd} -- path/to/file
@@ -374,4 +383,4 @@ Before calling `submit_review`, include concise context fields so authors can va
 - The title must start with a priority tag: `[P0]`, `[P1]`, `[P2]`, or `[P3]`.
 - `overall_correctness` must be exactly `"patch is correct"` or `"patch is incorrect"`.
 
-Start your review by running `export GIT_PAGER=cat`, then `{inspect_diff_cmd}` (Step 1a), then `{pr_diff_cmd}` (Step 1b), then `query_knowledge_base` for each subsystem identified (Step 1c), then `read AGENTS.md` (Step 1d Pass 1). Follow Phase 1 → Phase 2 → Phase 3 in order. Do not read AGENTS.md before completing all KB queries.
+Start your review by running `export GIT_PAGER=cat`, then `{inspect_diff_cmd}` (Step 1a), then `{pr_diff_cmd}` (Step 1b) — **each as its own bash tool call** — then `query_knowledge_base` for each subsystem identified (Step 1c), then `read AGENTS.md` (Step 1d Pass 1). Follow Phase 1 → Phase 2 → Phase 3 in order. Do not read AGENTS.md before completing all KB queries.
