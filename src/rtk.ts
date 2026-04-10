@@ -15,6 +15,32 @@ export async function checkRtkAvailable(): Promise<boolean> {
   }
 }
 
+function extractPrimaryCommandToken(cmd: string): string {
+  const trimmed = cmd.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  // Bash tool commands are often prefixed with "cd <workspace> &&".
+  // Inspect the final segment to identify the actual executable command.
+  const segments = trimmed
+    .split("&&")
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+  const candidate = segments.length > 0 ? segments[segments.length - 1] : trimmed;
+  const tokens = candidate.split(/\s+/);
+
+  for (const token of tokens) {
+    // Skip leading env assignments: FOO=bar git diff ...
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) {
+      continue;
+    }
+    return token;
+  }
+
+  return "";
+}
+
 export function isRtkCompatibleCommand(cmd: string): boolean {
   // RTK-supported commands that provide token savings
   // Based on: https://github.com/rtk-ai/rtk README
@@ -122,17 +148,16 @@ export function isRtkCompatibleCommand(cmd: string): boolean {
     "logout",
   ];
 
-  const isShellBuiltin = shellBuiltins.some((builtin) =>
-    cmd.startsWith(builtin),
-  );
-
-  if (isShellBuiltin) {
+  const commandToken = extractPrimaryCommandToken(cmd);
+  if (!commandToken) {
     return false;
   }
 
-  const isSupportedPrefix = supportedPrefixes.some((prefix) =>
-    cmd.startsWith(prefix),
-  );
+  const shellBuiltinsSet = new Set(shellBuiltins);
+  if (shellBuiltinsSet.has(commandToken)) {
+    return false;
+  }
 
-  return isSupportedPrefix;
+  const supportedPrefixesSet = new Set(supportedPrefixes);
+  return supportedPrefixesSet.has(commandToken);
 }

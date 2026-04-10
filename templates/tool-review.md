@@ -208,6 +208,19 @@ Before forming any finding on a CRITICAL or HIGH entity, run one `query_knowledg
 
 Example: if you are about to flag a bug in `PaymentService.settle()`, first query: _"What prior issues or edge cases were found in the payment settlement flow?"_ before writing the finding.
 
+**Mandatory KB contradiction check for every candidate finding (all priorities):**
+
+After drafting each candidate finding (P0-P3) and before keeping it in `findings`, run a `query_knowledge_base` call specifically to validate that claim. This is required for **every** candidate review comment, not only CRITICAL/HIGH entities.
+
+- Query as a direct validation question for the exact claim, including subsystem context.
+- Pass relevant `paths` and `symbols` from the finding's code location.
+- If KB returns an entry that **materially contradicts** the claim (for example, expected behavior is opposite, a known invariant disproves the claim, or prior runtime evidence shows the flagged scenario is invalid), **drop that finding** from `findings`.
+- Do not keep contradictory findings "just in case". Treat them as filtered-out comments.
+- Record each dropped finding in a "KB-dropped findings" ledger with: short title, contradiction summary, and the KB entry/question that caused the drop.
+- If KB and current PR discussion conflict, PR discussion takes precedence (as stated above). In that case, do not drop solely due to KB.
+
+This check is a final quality gate to prevent internally inconsistent review output.
+
 **For each entity, follow these rules before running `git diff`:**
 
 - **CRITICAL or HIGH**: Always run `git diff` — mandatory
@@ -344,6 +357,7 @@ Before calling `submit_review`, include concise context fields so authors can va
 - `maintainability_assessment`: required single sentence: either summarize high-signal maintainability concerns found, or explicitly state none were found
 - `confidence_notes` (optional): assumptions, uncertainty, or follow-up caveats
 - `kb_question_closure` (required): for every `query_knowledge_base` call made, state the query, whether it returned matches, and how the result influenced (or did not influence) a finding. If a query returned no matches, include your evidence-backed conclusion for that open question.
+- `kb_dropped_findings` (required): list candidate findings that were dropped because KB evidence contradicted them. Include dropped title, contradiction reason, and referenced KB query/entry. Use an empty list when none were dropped.
 
 ### submit_review payload
 
@@ -368,7 +382,10 @@ Before calling `submit_review`, include concise context fields so authors can va
   "prior_feedback_resolution": ["<required when prior review comments exist: 1-3 concise bullets>"],
   "maintainability_assessment": "<required single sentence; either concerns found or explicitly none>",
   "confidence_notes": ["<optional bullets>"],
-  "kb_question_closure": "<required: one sentence per KB query summarizing the query, match result, and whether it influenced a finding>"
+  "kb_question_closure": "<required: one sentence per KB query summarizing the query, match result, and whether it influenced a finding>",
+  "kb_dropped_findings": [
+    "<required: one bullet per dropped candidate finding with dropped title, contradiction summary, and KB query/entry reference; [] when none>"
+  ]
 }
 ```
 
@@ -382,5 +399,7 @@ Before calling `submit_review`, include concise context fields so authors can va
 - Use absolute file paths (for example, `/workspace/path/to/file.py`) not relative paths.
 - The title must start with a priority tag: `[P0]`, `[P1]`, `[P2]`, or `[P3]`.
 - `overall_correctness` must be exactly `"patch is correct"` or `"patch is incorrect"`.
+- Before submission, run the mandatory KB contradiction check for every candidate finding and remove contradicted comments from `findings`.
+- Always include `kb_dropped_findings` in the payload (empty list if nothing was dropped).
 
 Start your review by running `export GIT_PAGER=cat`, then `{inspect_diff_cmd}` (Step 1a), then `{pr_diff_cmd}` (Step 1b) — **each as its own bash tool call** — then `query_knowledge_base` for each subsystem identified (Step 1c), then `read AGENTS.md` (Step 1d Pass 1). Follow Phase 1 → Phase 2 → Phase 3 in order. Do not read AGENTS.md before completing all KB queries.
