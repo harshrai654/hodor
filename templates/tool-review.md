@@ -357,7 +357,7 @@ Before calling `submit_review`, include concise context fields so authors can va
 - `maintainability_assessment`: required single sentence: either summarize high-signal maintainability concerns found, or explicitly state none were found
 - `confidence_notes` (optional): assumptions, uncertainty, or follow-up caveats
 - `kb_question_closure` (required): for every `query_knowledge_base` call made, state the query, whether it returned matches, and how the result influenced (or did not influence) a finding. If a query returned no matches, include your evidence-backed conclusion for that open question.
-- `kb_dropped_findings` (required): list candidate findings that were dropped because KB evidence contradicted them. Include dropped title, contradiction reason, and referenced KB query/entry. Use an empty list when none were dropped.
+- `kb_question_closure` must also include a **KB-dropped findings** section: list any candidate findings you dropped due to KB contradictions (title + contradiction summary + KB query/entry reference). If none were dropped, explicitly state "KB-dropped findings: none."
 
 ### submit_review payload
 
@@ -382,10 +382,7 @@ Before calling `submit_review`, include concise context fields so authors can va
   "prior_feedback_resolution": ["<required when prior review comments exist: 1-3 concise bullets>"],
   "maintainability_assessment": "<required single sentence; either concerns found or explicitly none>",
   "confidence_notes": ["<optional bullets>"],
-  "kb_question_closure": "<required: one sentence per KB query summarizing the query, match result, and whether it influenced a finding>",
-  "kb_dropped_findings": [
-    "<required: one bullet per dropped candidate finding with dropped title, contradiction summary, and KB query/entry reference; [] when none>"
-  ]
+  "kb_question_closure": "<required: one sentence per KB query summarizing the query, match result, and whether it influenced a finding; MUST include a final 'KB-dropped findings' section>"
 }
 ```
 
@@ -400,6 +397,5 @@ Before calling `submit_review`, include concise context fields so authors can va
 - The title must start with a priority tag: `[P0]`, `[P1]`, `[P2]`, or `[P3]`.
 - `overall_correctness` must be exactly `"patch is correct"` or `"patch is incorrect"`.
 - Before submission, run the mandatory KB contradiction check for every candidate finding and remove contradicted comments from `findings`.
-- Always include `kb_dropped_findings` in the payload (empty list if nothing was dropped).
 
 Start your review by running `export GIT_PAGER=cat`, then `{inspect_diff_cmd}` (Step 1a), then `{pr_diff_cmd}` (Step 1b) — **each as its own bash tool call** — then `query_knowledge_base` for each subsystem identified (Step 1c), then `read AGENTS.md` (Step 1d Pass 1). Follow Phase 1 → Phase 2 → Phase 3 in order. Do not read AGENTS.md before completing all KB queries.

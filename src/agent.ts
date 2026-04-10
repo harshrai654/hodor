@@ -78,9 +78,48 @@ function createRtkSpawnHook(): BashSpawnHook {
       return ctx;
     }
 
+    const trimmed = cmd.trim();
+    if (trimmed === "" || trimmed.startsWith("rtk ")) {
+      return ctx;
+    }
+
+    // The bash tool frequently prefixes commands with `cd <workspace> &&`.
+    // We must wrap the *actual executable segment* with RTK (e.g. `cd ... && rtk git diff`),
+    // not the entire shell command (which would become `rtk cd ...` and break).
+    const segments = trimmed
+      .split("&&")
+      .map((segment) => segment.trim())
+      .filter(Boolean);
+    if (segments.length === 0) {
+      return ctx;
+    }
+
+    const last = segments[segments.length - 1];
+    const tokens = last.split(/\s+/).filter(Boolean);
+    const envAssignments: string[] = [];
+    let i = 0;
+    for (; i < tokens.length; i++) {
+      if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i])) {
+        envAssignments.push(tokens[i]);
+        continue;
+      }
+      break;
+    }
+
+    const remainder = tokens.slice(i).join(" ");
+    if (remainder.trim().length === 0 || remainder.trim().startsWith("rtk ")) {
+      return ctx;
+    }
+
+    const wrappedLast =
+      envAssignments.length > 0
+        ? `${envAssignments.join(" ")} rtk ${remainder}`
+        : `rtk ${remainder}`;
+    segments[segments.length - 1] = wrappedLast;
+
     return {
       ...ctx,
-      command: `rtk ${cmd}`,
+      command: segments.join(" && "),
     };
   };
 }
