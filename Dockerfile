@@ -22,9 +22,8 @@ COPY src ./src
 COPY templates ./templates
 RUN bun run build
 
-# Build inspect CLI (used by the agent runtime).
-# Rust 1.85+ is required for crates that use edition2024.
-FROM rust:1.85-slim AS inspect-build
+# Build inspect CLI (used by the agent runtime)
+FROM rust:1.83-slim AS inspect-build
 ARG INSPECT_GIT_URL="https://github.com/Ataraxy-Labs/inspect"
 ARG INSPECT_GIT_REV=""
 
