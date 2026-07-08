@@ -63,7 +63,7 @@ permissions:
 
 jobs:
   review:
-    runs-on: ubuntu-latest
+    runs-on: arc-runner-scale-set
     timeout-minutes: 45
 
     env:
@@ -83,6 +83,25 @@ jobs:
             echo "Error: no model API key found. Configure one of LLM_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY."
             exit 1
           fi
+
+      - name: Install GitHub CLI
+        run: |
+          if command -v gh >/dev/null 2>&1; then
+            gh --version
+          else
+            type -p curl >/dev/null || (sudo apt-get update && sudo apt-get install -y curl)
+            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+            sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+            sudo apt-get update
+            sudo apt-get install -y gh
+            gh --version
+          fi
+          if ! command -v jq >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y jq
+          fi
+          jq --version
 
       - name: Resolve PR metadata
         id: pr
@@ -111,11 +130,6 @@ jobs:
           set -euo pipefail
           git fetch --no-tags origin \
             "+refs/heads/${{ steps.pr.outputs.base_ref }}:refs/remotes/origin/${{ steps.pr.outputs.base_ref }}"
-
-      - name: Install GitHub CLI
-        run: |
-          # GitHub CLI should already be available in ubuntu-latest
-          gh --version
 
       - name: Run Hodor review
         env:
@@ -165,7 +179,7 @@ jobs:
             cmd+=("--prompt" "${CUSTOM_PROMPT}")
           fi
 
-          docker run --rm --user 0:0 \
+          docker run --pull=missing --rm --user 0:0 \
             -e GITHUB_ACTIONS="true" \
             -e GITHUB_WORKSPACE="${GITHUB_WORKSPACE}" \
             -e GITHUB_REPOSITORY="${GITHUB_REPOSITORY}" \

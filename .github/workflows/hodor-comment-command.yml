@@ -18,7 +18,7 @@ concurrency:
 jobs:
   parse:
     if: ${{ github.event.issue.pull_request }}
-    runs-on: ubuntu-latest
+    runs-on: arc-runner-scale-set
     outputs:
       should_run: ${{ steps.parse.outputs.should_run }}
       prompt: ${{ steps.parse.outputs.prompt }}

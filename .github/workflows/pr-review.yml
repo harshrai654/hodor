@@ -25,7 +25,7 @@ jobs:
     if: |
       github.event.label.name == 'hodor-review' ||
       github.event.requested_reviewer.login == 'hodor-agent'
-    runs-on: ubuntu-latest
+    runs-on: arc-runner-scale-set
 
     env:
       # Configuration
@@ -62,7 +62,16 @@ jobs:
 
       - name: Install GitHub CLI
         run: |
-          # GitHub CLI should already be available in ubuntu-latest
+          if command -v gh >/dev/null 2>&1; then
+            gh --version
+            exit 0
+          fi
+          type -p curl >/dev/null || (sudo apt-get update && sudo apt-get install -y curl)
+          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+          sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+          sudo apt-get update
+          sudo apt-get install -y gh
           gh --version
 
       - name: Check required secrets
@@ -124,6 +133,7 @@ jobs:
       - name: Upload logs
         uses: actions/upload-artifact@v4
         if: always()
+        continue-on-error: true
         with:
           name: hodor-review-logs
           path: |
