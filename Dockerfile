@@ -22,8 +22,10 @@ COPY src ./src
 COPY templates ./templates
 RUN bun run build
 
-# Build inspect CLI (used by the agent runtime)
-FROM rust:1.83-slim AS inspect-build
+# Build inspect CLI (used by the agent runtime).
+# Need Rust >= 1.88: getrandom 0.4 needs edition2024 (>=1.85), and
+# yanked tree-sitter-perl-next in inspect's lockfile needs stabilized let-chains.
+FROM rust:1.90-slim AS inspect-build
 ARG INSPECT_GIT_URL="https://github.com/Ataraxy-Labs/inspect"
 ARG INSPECT_GIT_REV=""
 
@@ -35,7 +37,7 @@ RUN apt-get update && \
         libssl-dev && \
     rm -rf /var/lib/apt/lists/*
 
-RUN set -euo && \
+RUN set -euo pipefail && \
     if [ -n "${INSPECT_GIT_REV}" ]; then \
       cargo install \
         --git "${INSPECT_GIT_URL}" \
