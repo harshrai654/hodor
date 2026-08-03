@@ -1,10 +1,10 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
+import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type {
   BashSpawnContext,
   BashSpawnHook,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import { logger } from "./utils/logger.js";
 import { exec } from "./utils/exec.js";
 import { fetchGithubPrInfo, normalizeGithubMetadata } from "./github.js";
@@ -385,16 +385,15 @@ export async function reviewPr(opts: {
     DefaultResourceLoader,
     SessionManager,
     SettingsManager,
-    createReadTool,
-    createBashTool,
-    createGrepTool,
-    createFindTool,
-    createLsTool,
-  } = await import("@mariozechner/pi-coding-agent");
-  const { getModel } = await import("@mariozechner/pi-ai");
+    createBashToolDefinition,
+  } = await import("@earendil-works/pi-coding-agent");
+  // Compat shim preserves the old getModel(provider, id) API while packages
+  // migrate to builtinModels().getModel(...).
+  const { getModel } = await import("@earendil-works/pi-ai/compat");
 
   // Resolve model — use registry for known models, construct manually for custom ARNs
-  let piModel: ReturnType<typeof getModel>;
+  type PiModel = NonNullable<ReturnType<typeof getModel>>;
+  let piModel: PiModel;
   if (parsed.modelId.startsWith("arn:")) {
     // Custom bedrock ARN (inference profile, cross-region, etc.)
     // Extract region from ARN: arn:aws:bedrock:<region>:<account>:...
@@ -415,19 +414,20 @@ export async function reviewPr(opts: {
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow: 200000,
       maxTokens: 16384,
-    } as ReturnType<typeof getModel>;
+    } as PiModel;
     logger.info(`Custom bedrock ARN model — region: ${region}`);
   } else {
-    try {
-      piModel = getModel(
-        parsed.provider as "anthropic",
-        parsed.modelId as never,
-      );
-    } catch (err) {
+    const resolved = getModel(
+      parsed.provider as "anthropic" | "openai",
+      parsed.modelId as never,
+    );
+    // getModel returns undefined for unknown IDs (does not throw).
+    if (!resolved) {
       throw new Error(
-        `Unsupported model "${model}": ${err instanceof Error ? err.message : err}`,
+        `Unsupported model "${model}": not found in pi-ai registry for provider "${parsed.provider}"`,
       );
     }
+    piModel = resolved;
   }
   logger.info("Preflight OK — model and credentials validated");
 
@@ -555,15 +555,17 @@ export async function reviewPr(opts: {
     const settingsManager = SettingsManager.inMemory({
       compaction: { enabled: false },
     });
+    const agentDir = join(workspacePath, ".hodor-agent");
     const skillPaths = [
       join(workspacePath, ".pi", "skills"),
       join(workspacePath, ".hodor", "skills"),
     ].filter((p) => existsSync(p));
     const resourceLoader = new DefaultResourceLoader({
       cwd: workspacePath,
+      agentDir,
       settingsManager,
       systemPrompt: REVIEW_SYSTEM_PROMPT,
-      appendSystemPrompt: "",
+      appendSystemPrompt: [],
       noExtensions: true,
       noSkills: true,
       noPromptTemplates: true,
@@ -832,21 +834,36 @@ export async function reviewPr(opts: {
       },
     };
 
+    const reviewToolNames = [
+      "read",
+      "bash",
+      "grep",
+      "find",
+      "ls",
+      "query_knowledge_base",
+      "submit_review",
+    ];
+    const customTools = [
+      ...(rtkAvailable
+        ? [
+            createBashToolDefinition(workspacePath, {
+              spawnHook: createRtkSpawnHook(),
+            }),
+          ]
+        : []),
+      queryKnowledgeBaseTool,
+      submitReviewTool,
+    ] as ToolDefinition[];
+
     const { session } = await createAgentSession({
       cwd: workspacePath,
+      agentDir,
       model: piModel,
       thinkingLevel,
-      tools: [
-        createReadTool(workspacePath),
-        createBashTool(
-          workspacePath,
-          rtkAvailable ? { spawnHook: createRtkSpawnHook() } : undefined,
-        ),
-        createGrepTool(workspacePath),
-        createFindTool(workspacePath),
-        createLsTool(workspacePath),
-      ],
-      customTools: [queryKnowledgeBaseTool, submitReviewTool],
+      // Name allowlist — built-ins are registered by AgentSession; custom tools
+      // must also be listed when an allowlist is provided.
+      tools: reviewToolNames,
+      customTools,
       sessionManager: SessionManager.inMemory(),
       settingsManager,
       resourceLoader,

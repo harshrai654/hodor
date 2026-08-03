@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseModelString } from "./model.js";
 import {
@@ -223,16 +223,19 @@ export async function checkExtractionModelConnectivity(opts: {
       SessionManager,
       SettingsManager,
       DefaultResourceLoader,
-    } = await import("@mariozechner/pi-coding-agent");
+    } = await import("@earendil-works/pi-coding-agent");
 
     const settingsManager = SettingsManager.inMemory({
       compaction: { enabled: false },
     });
+    const cwd = process.cwd();
+    const agentDir = join(cwd, ".hodor-agent");
     const resourceLoader = new DefaultResourceLoader({
-      cwd: process.cwd(),
+      cwd,
+      agentDir,
       settingsManager,
       systemPrompt: "You are a healthcheck assistant. Respond with OK.",
-      appendSystemPrompt: "",
+      appendSystemPrompt: [],
       noExtensions: true,
       noSkills: true,
       noPromptTemplates: true,
@@ -243,9 +246,10 @@ export async function checkExtractionModelConnectivity(opts: {
     await resourceLoader.reload();
 
     const { session } = await createAgentSession({
-      cwd: process.cwd(),
-      model: piModel as ReturnType<
-        typeof import("@mariozechner/pi-ai").getModel
+      cwd,
+      agentDir,
+      model: piModel as NonNullable<
+        ReturnType<typeof import("@earendil-works/pi-ai/compat").getModel>
       >,
       tools: [],
       customTools: [],
@@ -326,17 +330,20 @@ export async function runKnowledgeExtraction(opts: {
       SessionManager,
       SettingsManager,
       DefaultResourceLoader,
-    } = await import("@mariozechner/pi-coding-agent");
+    } = await import("@earendil-works/pi-coding-agent");
 
     const settingsManager = SettingsManager.inMemory({
       compaction: { enabled: false },
     });
+    const cwd = process.cwd();
+    const agentDir = join(cwd, ".hodor-agent");
     const resourceLoader = new DefaultResourceLoader({
-      cwd: process.cwd(),
+      cwd,
+      agentDir,
       settingsManager,
       systemPrompt:
         "You are a knowledge extraction assistant. Respond only with JSON.",
-      appendSystemPrompt: "",
+      appendSystemPrompt: [],
       noExtensions: true,
       noSkills: true,
       noPromptTemplates: true,
@@ -347,9 +354,10 @@ export async function runKnowledgeExtraction(opts: {
     await resourceLoader.reload();
 
     const { session } = await createAgentSession({
-      cwd: process.cwd(),
-      model: piModel as ReturnType<
-        typeof import("@mariozechner/pi-ai").getModel
+      cwd,
+      agentDir,
+      model: piModel as NonNullable<
+        ReturnType<typeof import("@earendil-works/pi-ai/compat").getModel>
       >,
       tools: [],
       customTools: [],

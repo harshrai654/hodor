@@ -55,7 +55,7 @@ export function parseModelString(model: string): ParsedModel {
  */
 export function mapReasoningEffort(
   effort: string | undefined,
-): "low" | "medium" | "high" | undefined {
+): "low" | "medium" | "high" | "xhigh" | "max" | undefined {
   if (!effort) return undefined;
   switch (effort.toLowerCase()) {
     case "low":
@@ -63,8 +63,11 @@ export function mapReasoningEffort(
     case "medium":
       return "medium";
     case "high":
-    case "xhigh":
       return "high";
+    case "xhigh":
+      return "xhigh";
+    case "max":
+      return "max";
     default:
       return undefined;
   }

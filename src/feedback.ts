@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { detectPlatform, parsePrUrl } from "./agent.js";
 import {
@@ -251,7 +251,7 @@ function sumUsageFromSessionMessages(messages: unknown[]): UsageTotals {
  */
 async function resolvePiModel(model: string): Promise<unknown> {
   const parsed = parseModelString(model);
-  const { getModel } = await import("@mariozechner/pi-ai");
+  const { getModel } = await import("@earendil-works/pi-ai/compat");
 
   if (parsed.modelId.startsWith("arn:")) {
     const arnParts = parsed.modelId.split(":");
@@ -270,28 +270,27 @@ async function resolvePiModel(model: string): Promise<unknown> {
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow: 200000,
       maxTokens: 16384,
-    } as ReturnType<typeof getModel>;
+    } as NonNullable<ReturnType<typeof getModel>>;
   }
 
-  try {
-    const piModel = getModel(
-      parsed.provider as "anthropic" | "openai",
-      parsed.modelId as never,
-    );
-    // Verify the resolved model's provider matches what was requested,
-    // since getModel may fall back to a default provider for unknown model IDs.
-    const resolved = piModel as { provider?: string };
-    if (resolved.provider && resolved.provider !== parsed.provider) {
-      logger.warn(
-        `Model "${model}" resolved to provider "${resolved.provider}" instead of "${parsed.provider}" — check if this model ID is registered in pi-ai`,
-      );
-    }
-    return piModel;
-  } catch (err) {
+  const piModel = getModel(
+    parsed.provider as "anthropic" | "openai",
+    parsed.modelId as never,
+  );
+  if (!piModel) {
     throw new Error(
-      `Unsupported model "${model}": ${err instanceof Error ? err.message : err}`,
+      `Unsupported model "${model}": not found in pi-ai registry for provider "${parsed.provider}"`,
     );
   }
+  // Verify the resolved model's provider matches what was requested,
+  // since getModel may fall back to a default provider for unknown model IDs.
+  const resolved = piModel as { provider?: string };
+  if (resolved.provider && resolved.provider !== parsed.provider) {
+    logger.warn(
+      `Model "${model}" resolved to provider "${resolved.provider}" instead of "${parsed.provider}" — check if this model ID is registered in pi-ai`,
+    );
+  }
+  return piModel;
 }
 
 export async function runFeedbackExtraction(opts: {
@@ -359,17 +358,20 @@ export async function runFeedbackExtraction(opts: {
         SessionManager,
         SettingsManager,
         DefaultResourceLoader,
-      } = await import("@mariozechner/pi-coding-agent");
+      } = await import("@earendil-works/pi-coding-agent");
 
       const settingsManager = SettingsManager.inMemory({
         compaction: { enabled: false },
       });
+      const cwd = process.cwd();
+      const agentDir = join(cwd, ".hodor-agent");
       const resourceLoader = new DefaultResourceLoader({
-        cwd: process.cwd(),
+        cwd,
+        agentDir,
         settingsManager,
         systemPrompt:
           "You are a feedback analysis assistant. Respond only with JSON.",
-        appendSystemPrompt: "",
+        appendSystemPrompt: [],
         noExtensions: true,
         noSkills: true,
         noPromptTemplates: true,
@@ -380,9 +382,10 @@ export async function runFeedbackExtraction(opts: {
       await resourceLoader.reload();
 
       const { session } = await createAgentSession({
-        cwd: process.cwd(),
-        model: piModel as ReturnType<
-          typeof import("@mariozechner/pi-ai").getModel
+        cwd,
+        agentDir,
+        model: piModel as NonNullable<
+          ReturnType<typeof import("@earendil-works/pi-ai/compat").getModel>
         >,
         tools: [],
         customTools: [],

@@ -58,7 +58,7 @@ const mockGetModel = vi.fn().mockReturnValue({
   maxTokens: 8192,
 });
 
-vi.mock("@mariozechner/pi-ai", () => ({
+vi.mock("@earendil-works/pi-ai/compat", () => ({
   getModel: (...args: unknown[]) => mockGetModel(...args),
 }));
 
@@ -66,7 +66,7 @@ let mockSessionResponse = "[]";
 let mockSessionError: string | undefined;
 let mockSessionMessages: unknown[] = [];
 
-vi.mock("@mariozechner/pi-coding-agent", () => ({
+vi.mock("@earendil-works/pi-coding-agent", () => ({
   createAgentSession: vi.fn().mockImplementation(async () => ({
     session: {
       prompt: vi.fn().mockResolvedValue(undefined),
@@ -597,7 +597,7 @@ describe("runFeedbackExtraction", () => {
   it("includes all comments in the prompt", async () => {
     const { runFeedbackExtraction } = await import("../src/feedback.js");
     const { createAgentSession } =
-      await import("@mariozechner/pi-coding-agent");
+      await import("@earendil-works/pi-coding-agent");
 
     mockSessionResponse = "[]";
 

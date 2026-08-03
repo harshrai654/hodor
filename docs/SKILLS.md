@@ -1,6 +1,6 @@
 # Skills System (Upstream Format)
 
-Hodor uses the upstream `@mariozechner/pi-coding-agent` skills system (`agentskills.io` style).
+Hodor uses the upstream `@earendil-works/pi-coding-agent` skills system (`agentskills.io` style).
 
 Skills are:
 

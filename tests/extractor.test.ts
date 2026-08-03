@@ -18,7 +18,7 @@ let mockSessionError: string | undefined;
 let mockSessionMessages: unknown[] = [];
 
 // Mock pi-coding-agent SDK
-vi.mock("@mariozechner/pi-coding-agent", () => ({
+vi.mock("@earendil-works/pi-coding-agent", () => ({
   createAgentSession: vi.fn().mockImplementation(async () => ({
     session: {
       prompt: vi.fn().mockResolvedValue(undefined),
