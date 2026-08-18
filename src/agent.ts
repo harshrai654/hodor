@@ -40,6 +40,12 @@ import type {
   ReviewOutput,
 } from "./types.js";
 import { isRtkCompatibleCommand } from "./rtk.js";
+import {
+  logMissingSubmitReviewDebug,
+  missingSubmitReviewError,
+  runUntilSubmitReview,
+  type SubmitReviewSession,
+} from "./submit-review-guard.js";
 
 export interface AgentProgressEvent {
   type:
@@ -968,34 +974,16 @@ export async function reviewPr(opts: {
     });
 
     logger.info("Sending prompt to agent...");
-    await session.prompt(prompt);
-
-    // Check for agent errors (pi-ai swallows LLM errors into state.error)
-    const agentError = (session as unknown as { state: { error?: string } })
-      .state?.error;
-    if (agentError) {
-      throw new Error(`LLM request failed: ${agentError}`);
-    }
+    await runUntilSubmitReview({
+      session: session as unknown as SubmitReviewSession,
+      initialPrompt: prompt,
+      isSubmitted: () => submittedReview != null,
+      getSubmitReviewCalls: () => submitReviewCalls,
+    });
 
     if (!submittedReview) {
-      const rawText = session.getLastAssistantText() ?? "";
-      if (rawText) {
-        logger.debug(
-          `Last assistant text without submit_review (first 500 chars): ${rawText.slice(0, 500)}`,
-        );
-      } else {
-        const messages = (
-          session as unknown as { state: { messages: unknown[] } }
-        ).state?.messages;
-        const lastMsg = messages?.[messages.length - 1];
-        logger.debug(`Last message: ${JSON.stringify(lastMsg)?.slice(0, 500)}`);
-      }
-      if (submitReviewCalls > 0) {
-        throw new Error(
-          "Agent called submit_review but did not provide a valid review payload",
-        );
-      }
-      throw new Error("Agent did not call submit_review");
+      logMissingSubmitReviewDebug(session as unknown as SubmitReviewSession);
+      throw missingSubmitReviewError(submitReviewCalls);
     }
 
     const review = submittedReview as ReviewOutput;
