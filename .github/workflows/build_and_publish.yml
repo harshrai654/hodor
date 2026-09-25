@@ -13,7 +13,7 @@ env:
 jobs:
   publish:
     name: Publish
-    runs-on: ubuntu-latest
+    runs-on: arc-runner-scale-set
     permissions:
       contents: read
       packages: write
@@ -29,11 +29,19 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GitHub Container Registry
+        if: vars.PUSH_GHCR != 'false'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Zot
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ github.ref_name == 'main' && 'zot-internal.koinx.com' || 'zot-dev-internal.koinx.com' }}
+          username: ${{ github.ref_name == 'main' && secrets.ZOT_PROD_USERNAME || secrets.ZOT_DEV_USERNAME }}
+          password: ${{ github.ref_name == 'main' && secrets.ZOT_PROD_PASSWORD || secrets.ZOT_DEV_PASSWORD }}
 
       - name: Generate image tags
         id: tag
@@ -57,8 +65,11 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: |
-            ${{ steps.tag.outputs.image_base }}:${{ steps.tag.outputs.image_tag }}
-            ${{ steps.tag.outputs.image_base }}:${{ steps.tag.outputs.latest_ref }}
-            ${{ steps.tag.outputs.image_base }}:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+            ${{ vars.PUSH_GHCR != 'false' && format('{0}:{1}', steps.tag.outputs.image_base, steps.tag.outputs.image_tag) || '' }}
+            ${{ vars.PUSH_GHCR != 'false' && format('{0}:{1}', steps.tag.outputs.image_base, steps.tag.outputs.latest_ref) || '' }}
+            ${{ vars.PUSH_GHCR != 'false' && format('{0}:latest', steps.tag.outputs.image_base) || '' }}
+            ${{ github.ref_name == 'main' && 'zot-internal.koinx.com' || 'zot-dev-internal.koinx.com' }}/koinx-tech/hodor:${{ steps.tag.outputs.image_tag }}
+            ${{ github.ref_name == 'main' && 'zot-internal.koinx.com' || 'zot-dev-internal.koinx.com' }}/koinx-tech/hodor:${{ steps.tag.outputs.latest_ref }}
+            ${{ github.ref_name == 'main' && 'zot-internal.koinx.com' || 'zot-dev-internal.koinx.com' }}/koinx-tech/hodor:latest
+          cache-from: type=registry,ref=${{ github.ref_name == 'main' && 'zot-internal.koinx.com' || 'zot-dev-internal.koinx.com' }}/koinx-tech/hodor:buildcache
+          cache-to: type=registry,ref=${{ github.ref_name == 'main' && 'zot-internal.koinx.com' || 'zot-dev-internal.koinx.com' }}/koinx-tech/hodor:buildcache,mode=max
