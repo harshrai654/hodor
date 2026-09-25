@@ -27,6 +27,11 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: network=host
+          buildkitd-config-inline: |
+            [registry."zot.ns-7dpt7m5sy72p.svc.cluster.local:5000"]
+              http = true
 
       - name: Log in to GitHub Container Registry
         if: vars.PUSH_GHCR != 'false'
@@ -36,12 +41,11 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Log in to Zot
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ github.ref_name == 'main' && 'zot-internal.koinx.com' || 'zot-dev-internal.koinx.com' }}
-          username: ${{ github.ref_name == 'main' && secrets.ZOT_PROD_USERNAME || secrets.ZOT_DEV_USERNAME }}
-          password: ${{ github.ref_name == 'main' && secrets.ZOT_PROD_PASSWORD || secrets.ZOT_DEV_PASSWORD }}
+      - name: Log in to dev Zot
+        env:
+          ZOT_DEV_USERNAME: ${{ secrets.ZOT_DEV_USERNAME }}
+          ZOT_DEV_PASSWORD: ${{ secrets.ZOT_DEV_PASSWORD }}
+        run: echo "$ZOT_DEV_PASSWORD" | docker login zot.ns-7dpt7m5sy72p.svc.cluster.local:5000 -u "$ZOT_DEV_USERNAME" --password-stdin
 
       - name: Generate image tags
         id: tag
@@ -68,8 +72,8 @@ jobs:
             ${{ vars.PUSH_GHCR != 'false' && format('{0}:{1}', steps.tag.outputs.image_base, steps.tag.outputs.image_tag) || '' }}
             ${{ vars.PUSH_GHCR != 'false' && format('{0}:{1}', steps.tag.outputs.image_base, steps.tag.outputs.latest_ref) || '' }}
             ${{ vars.PUSH_GHCR != 'false' && format('{0}:latest', steps.tag.outputs.image_base) || '' }}
-            ${{ github.ref_name == 'main' && 'zot-internal.koinx.com' || 'zot-dev-internal.koinx.com' }}/koinx-tech/hodor:${{ steps.tag.outputs.image_tag }}
-            ${{ github.ref_name == 'main' && 'zot-internal.koinx.com' || 'zot-dev-internal.koinx.com' }}/koinx-tech/hodor:${{ steps.tag.outputs.latest_ref }}
-            ${{ github.ref_name == 'main' && 'zot-internal.koinx.com' || 'zot-dev-internal.koinx.com' }}/koinx-tech/hodor:latest
-          cache-from: type=registry,ref=${{ github.ref_name == 'main' && 'zot-internal.koinx.com' || 'zot-dev-internal.koinx.com' }}/koinx-tech/hodor:buildcache
-          cache-to: type=registry,ref=${{ github.ref_name == 'main' && 'zot-internal.koinx.com' || 'zot-dev-internal.koinx.com' }}/koinx-tech/hodor:buildcache,mode=max
+            zot.ns-7dpt7m5sy72p.svc.cluster.local:5000/koinx-tech/hodor:${{ steps.tag.outputs.image_tag }}
+            zot.ns-7dpt7m5sy72p.svc.cluster.local:5000/koinx-tech/hodor:${{ steps.tag.outputs.latest_ref }}
+            zot.ns-7dpt7m5sy72p.svc.cluster.local:5000/koinx-tech/hodor:latest
+          cache-from: type=registry,ref=zot.ns-7dpt7m5sy72p.svc.cluster.local:5000/koinx-tech/hodor:buildcache
+          cache-to: type=registry,ref=zot.ns-7dpt7m5sy72p.svc.cluster.local:5000/koinx-tech/hodor:buildcache,mode=max

@@ -51,7 +51,9 @@ on:
         required: false
       HODOR_QDRANT_API_KEY:
         required: false
-      HODOR_GHCR_TOKEN:
+      ZOT_DEV_USERNAME:
+        required: false
+      ZOT_DEV_PASSWORD:
         required: false
 
 permissions:
@@ -138,7 +140,8 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HODOR_GHCR_TOKEN: ${{ secrets.HODOR_GHCR_TOKEN }}
+          ZOT_DEV_USERNAME: ${{ secrets.ZOT_DEV_USERNAME }}
+          ZOT_DEV_PASSWORD: ${{ secrets.ZOT_DEV_PASSWORD }}
           HODOR_GH_CHECKS: "1"
           # Do not rely on overriding GITHUB_* vars from workflow env.
           HODOR_BASE_REF: ${{ steps.pr.outputs.base_ref }}
@@ -154,20 +157,9 @@ jobs:
         run: |
           set -euo pipefail
           pr_url="https://github.com/${REPO_NAME}/pull/${PR_NUMBER}"
-          HODOR_IMAGE="ghcr.io/$(echo "${HODOR_REPO}" | tr '[:upper:]' '[:lower:]'):latest"
-
-          TOKEN="${HODOR_GHCR_TOKEN:-${GITHUB_TOKEN}}"
-          echo "${TOKEN}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-
-          # Diagnostic: confirm whether `:latest` exists and whether this token can read it.
-          # 200 => tag readable, 401/403 => auth/permission, 404 => missing tag.
-          HODOR_REF="$(echo "${HODOR_REPO}" | tr '[:upper:]' '[:lower:]')"
-          HODOR_OWNER="${HODOR_REF%/*}"
-          HODOR_NAME="${HODOR_REF#*/}"
-          GHCR_STATUS="$(curl -s -o /dev/null -w "%{http_code}" \
-            -H "Authorization: Bearer ${TOKEN}" \
-            "https://ghcr.io/v2/${HODOR_OWNER}/${HODOR_NAME}/manifests/latest" || true)"
-          echo "GHCR manifest status for ${HODOR_OWNER}/${HODOR_NAME}:latest => ${GHCR_STATUS}"
+          ZOT_HOST="zot.ns-7dpt7m5sy72p.svc.cluster.local:5000"
+          HODOR_IMAGE="${ZOT_HOST}/$(echo "${HODOR_REPO}" | tr '[:upper:]' '[:lower:]'):latest"
+          echo "$ZOT_DEV_PASSWORD" | docker login "$ZOT_HOST" -u "$ZOT_DEV_USERNAME" --password-stdin
 
           cmd=(
             "${pr_url}"
