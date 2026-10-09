@@ -340,6 +340,13 @@ export async function postFeedbackComment(opts: {
   }
 }
 
+function workspaceMode(isTemporary: boolean): string {
+  if (process.env.GITHUB_ACTIONS === "true" || process.env.GITLAB_CI === "true") {
+    return "ci";
+  }
+  return isTemporary ? "clone" : "reused";
+}
+
 export async function reviewPr(opts: {
   prUrl: string;
   model?: string;
@@ -552,8 +559,8 @@ export async function reviewPr(opts: {
   let isTemporary: boolean;
   try {
     const setup = await context.with(reviewCtx, () =>
-      withActiveSpan("hodor.workspace.setup", {}, () =>
-        setupWorkspace({
+      withActiveSpan("hodor.workspace.setup", {}, async (span) => {
+        const ready = await setupWorkspace({
           platform,
           owner,
           repo,
@@ -561,8 +568,14 @@ export async function reviewPr(opts: {
           host,
           workingDir: workspaceDir ?? undefined,
           reuse: workspaceDir != null,
-        }),
-      ),
+        });
+        span.setAttribute("hodor.workspace.mode", workspaceMode(ready.isTemporary));
+        span.setAttribute("hodor.workspace.target_branch", ready.targetBranch);
+        if (ready.diffBaseSha) {
+          span.setAttribute("hodor.workspace.diff_base_sha", ready.diffBaseSha);
+        }
+        return ready;
+      }),
     );
     workspace = setup.workspace;
     targetBranch = setup.targetBranch;
@@ -830,11 +843,16 @@ export async function reviewPr(opts: {
           : result.matches.length === 0
             ? "no_match"
             : "match";
+        const scores = result.matches
+          .map((match) => match.confidence)
+          .filter((score) => Number.isFinite(score));
         traceKbQuery({
           query: queryParams.query,
           result: kbResult,
           matchCount: result.matches.length,
           closureRequired: kbResult === "no_match",
+          topScore: scores.length > 0 ? Math.max(...scores) : undefined,
+          pathSymbolFallback: result.pathSymbolFallback,
         });
         if (!result.ok) {
           return {
@@ -910,7 +928,13 @@ export async function reviewPr(opts: {
               text: `${fallbackNote}Matched prior learnings:\n\n${summary}`,
             },
           ],
-          details: { ok: true, matches: result.matches },
+            details: {
+              ok: true,
+              matches: result.matches,
+              ...(result.pathSymbolFallback
+                ? { pathSymbolFallback: true }
+                : {}),
+            },
         };
       },
     };

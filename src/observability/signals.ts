@@ -7,6 +7,8 @@ import {
   GEN_AI_USAGE_OUTPUT_TOKENS,
 } from "./genai.js";
 import { touchedFiles } from "./files.js";
+import { kbQueryAttributes, type KbQuerySignal } from "./tool-outcome.js";
+import { latestOpenTool } from "./tool-spans.js";
 import {
   recordFilesTouched,
   recordKbQuery,
@@ -14,7 +16,6 @@ import {
   recordReview,
   recordRun,
   recordTokenUsage,
-  type KbQueryResult,
   type KnowledgeCounts,
   type KnowledgeSource,
   type RunOutcome,
@@ -82,17 +83,7 @@ export function annotateReview(opts: {
 }): string | undefined {
   const { span } = opts;
   if (opts.usage) {
-    span.setAttribute(GEN_AI_USAGE_INPUT_TOKENS, opts.usage.inputTokens);
-    span.setAttribute(GEN_AI_USAGE_OUTPUT_TOKENS, opts.usage.outputTokens);
-    span.setAttribute(
-      GEN_AI_USAGE_CACHE_READ_INPUT_TOKENS,
-      opts.usage.cacheReadTokens,
-    );
-    span.setAttribute(
-      GEN_AI_USAGE_CACHE_CREATION_INPUT_TOKENS,
-      opts.usage.cacheWriteTokens,
-    );
-    span.setAttribute("hodor.usage.cost_usd", opts.usage.cost);
+    setUsageAttributes(span, opts.usage);
     recordTokenUsage("review", opts.model, opts.usage);
   }
   if (opts.turns !== undefined) span.setAttribute("hodor.turns", opts.turns);
@@ -151,28 +142,34 @@ export function annotateKnowledge(
   recordKnowledgePoints(source, counts);
   if (usage) {
     span.setAttribute(GEN_AI_REQUEST_MODEL, model);
-    span.setAttribute(GEN_AI_USAGE_INPUT_TOKENS, usage.inputTokens);
-    span.setAttribute(GEN_AI_USAGE_OUTPUT_TOKENS, usage.outputTokens);
+    setUsageAttributes(span, usage);
     recordTokenUsage(phase, model, usage);
   }
 }
 
-export function traceKbQuery(opts: {
-  query: string;
-  result: KbQueryResult;
-  matchCount: number;
-  closureRequired: boolean;
-}): void {
-  const span = tracer.startSpan("hodor.kb.query", {
-    attributes: {
-      "hodor.kb.query": opts.query.slice(0, QUERY_LIMIT),
-      "hodor.kb.result": opts.result,
-      "hodor.kb.match_count": opts.matchCount,
-      "hodor.kb.closure_required": opts.closureRequired,
-    },
+export function traceKbQuery(opts: KbQuerySignal): void {
+  const attributes = kbQueryAttributes({
+    ...opts,
+    query: opts.query.slice(0, QUERY_LIMIT),
   });
+  const tool = latestOpenTool("query_knowledge_base");
+  if (tool) {
+    for (const [name, value] of Object.entries(attributes)) {
+      tool.span.setAttribute(name, value);
+    }
+    tool.span.setAttribute(
+      "hodor.tool.outcome",
+      opts.result === "match" ? "ok" : opts.result,
+    );
+  }
+  const span = tracer.startSpan(
+    "hodor.kb.query",
+    { attributes },
+    tool?.context,
+  );
   if (opts.result === "error") {
     span.setStatus({ code: SpanStatusCode.ERROR });
+    tool?.span.setStatus({ code: SpanStatusCode.ERROR });
   }
   span.end();
   recordKbQuery(opts.result);
@@ -193,14 +190,21 @@ export function annotateLearnRoot(
   setKnowledgeAttributes(span, result);
   span.setAttribute(GEN_AI_REQUEST_MODEL, model);
   if (!result.llmMetrics) return;
+  setUsageAttributes(span, result.llmMetrics);
+}
+
+function setUsageAttributes(span: Span, usage: TokenUsage): void {
+  span.setAttribute(GEN_AI_USAGE_INPUT_TOKENS, usage.inputTokens);
+  span.setAttribute(GEN_AI_USAGE_OUTPUT_TOKENS, usage.outputTokens);
   span.setAttribute(
-    GEN_AI_USAGE_INPUT_TOKENS,
-    result.llmMetrics.inputTokens,
+    GEN_AI_USAGE_CACHE_READ_INPUT_TOKENS,
+    usage.cacheReadTokens,
   );
   span.setAttribute(
-    GEN_AI_USAGE_OUTPUT_TOKENS,
-    result.llmMetrics.outputTokens,
+    GEN_AI_USAGE_CACHE_CREATION_INPUT_TOKENS,
+    usage.cacheWriteTokens,
   );
+  span.setAttribute("hodor.usage.cost_usd", usage.cost);
 }
 
 function setKnowledgeAttributes(span: Span, counts: KnowledgeCounts): void {

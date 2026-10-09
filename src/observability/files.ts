@@ -39,16 +39,22 @@ function pathsFromBash(command: string): string[] {
   const paths: string[] = [];
   for (const raw of tokens) {
     const token = raw.replace(/^['"]|['"]$/g, "");
-    if (!token || token.startsWith("-")) continue;
-    if (token.includes("://")) continue;
-    if (token === "&&" || token === "||" || token === "|" || token === ";") {
-      continue;
-    }
-    if (token.includes("/") || /\.[A-Za-z0-9]{1,8}$/.test(token)) {
-      paths.push(token);
-    }
+    if (isFilePathToken(token)) paths.push(token);
   }
   return paths;
+}
+
+function isFilePathToken(token: string): boolean {
+  if (!token || token.startsWith("-")) return false;
+  if (token.includes("://") || token.includes("..") || token.includes(")")) {
+    return false;
+  }
+  if (token === "&&" || token === "||" || token === "|" || token === ";") {
+    return false;
+  }
+  if (/^(origin|upstream|refs)\//.test(token)) return false;
+  if (token === "HEAD" || token.endsWith("/HEAD")) return false;
+  return token.includes("/") || /\.[A-Za-z0-9]{1,8}$/.test(token);
 }
 
 function normalizePath(path: string | undefined): string | undefined {

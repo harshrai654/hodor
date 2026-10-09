@@ -36,11 +36,8 @@ import {
   grpcEndpoint,
   observabilityEnabled,
 } from "../src/observability/sdk.js";
-import {
-  annotateReview,
-  startSpan,
-  traceKbQuery,
-} from "../src/observability/signals.js";
+import { annotateKnowledge, annotateReview, startSpan, traceKbQuery } from "../src/observability/signals.js";
+import { resetOpenToolsForTests } from "../src/observability/tool-spans.js";
 
 const exporter = new InMemorySpanExporter();
 const provider = new BasicTracerProvider({
@@ -56,6 +53,7 @@ beforeEach(() => {
   resetMetricsForTests();
   resetTouchedFiles();
   resetRequestedExitForTests();
+  resetOpenToolsForTests();
   delete process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
   delete process.env.OTEL_SDK_DISABLED;
 });
@@ -80,6 +78,14 @@ describe("pathsFromToolCall", () => {
     expect(pathsFromToolCall("bash", { command: "curl https://example.com" })).toEqual(
       [],
     );
+    expect(
+      pathsFromToolCall("bash", {
+        command: "git diff origin/development...HEAD -- src/a.ts",
+      }),
+    ).toEqual(["src/a.ts"]);
+    expect(
+      pathsFromToolCall("bash", { command: "git show 'HEAD)..HEAD'" }),
+    ).toEqual([]);
   });
 
   it("keeps a capped unique list of touched files", () => {
@@ -90,6 +96,23 @@ describe("pathsFromToolCall", () => {
     expect(touchedFiles()).toEqual(["a.ts", "b.ts"]);
   });
 });
+
+function listen(): (event: PiAgentEvent) => void {
+  const events: Array<(event: PiAgentEvent) => void> = [];
+  const session: AgentSessionLike = {
+    subscribe(listener) {
+      events.push(listener);
+    },
+  };
+  instrumentAgentSession(session, {
+    model: "claude-sonnet",
+    provider: "anthropic",
+    command: "review",
+  });
+  return (event) => {
+    for (const listener of events) listener(event);
+  };
+}
 
 describe("Pi instrumentation", () => {
   it("opens session, turn, tool, and gen_ai spans without prompt text", async () => {
@@ -151,6 +174,92 @@ describe("Pi instrumentation", () => {
     }
     expect(JSON.stringify(chat?.attributes)).not.toContain("do not export");
     expect(touchedFiles()).toEqual(["src/metrics.ts"]);
+    const tool = finishedSpans().find((span) => span.name === "hodor.tool");
+    expect(tool?.attributes["hodor.tool.target"]).toBe("src/metrics.ts");
+    expect(tool?.attributes["hodor.tool.outcome"]).toBe("ok");
+    const turn = finishedSpans().find((span) => span.name === "hodor.agent.turn");
+    expect(turn?.attributes["hodor.turn.index"]).toBe(1);
+    expect(turn?.attributes["hodor.turn.tool_calls"]).toBe(1);
+  });
+
+  it("keeps the gen_ai span open for the assistant message", () => {
+    const emit = listen();
+    emit({ type: "turn_start" });
+    emit({ type: "message_start", message: { role: "assistant" } });
+    expect(finishedSpans().map((span) => span.name)).not.toContain("gen_ai.chat");
+    emit({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        stopReason: "stop",
+        usage: { input: 3, output: 4, cacheRead: 9, cacheWrite: 2 },
+      },
+    });
+    emit({ type: "turn_end", message: { role: "assistant", stopReason: "stop" } });
+    const chat = finishedSpans().find((span) => span.name === "gen_ai.chat");
+    expect(chat?.attributes["gen_ai.usage.cache_read.input_tokens"]).toBe(9);
+    expect(chat?.attributes["gen_ai.usage.cache_creation.input_tokens"]).toBe(2);
+    const turn = finishedSpans().find((span) => span.name === "hodor.agent.turn");
+    expect(turn?.attributes["hodor.turn.stop_reason"]).toBe("stop");
+  });
+
+  it("records a knowledge-base miss and retrieval score on the tool span", () => {
+    const emit = listen();
+    emit({ type: "turn_start" });
+    emit({
+      type: "tool_execution_start",
+      toolCallId: "kb",
+      toolName: "query_knowledge_base",
+      args: { query: "Can publish recover after a NATS ack failure?" },
+    });
+    traceKbQuery({
+      query: "Can publish recover after a NATS ack failure?",
+      result: "no_match",
+      matchCount: 0,
+      closureRequired: true,
+    });
+    emit({
+      type: "tool_execution_end",
+      toolCallId: "kb",
+      toolName: "query_knowledge_base",
+      isError: false,
+      result: {
+        content: [{ type: "text", text: "No prior durable learnings matched this query." }],
+        details: { ok: true, matches: [] },
+      },
+    });
+    emit({
+      type: "tool_execution_start",
+      toolCallId: "kb2",
+      toolName: "query_knowledge_base",
+      args: { query: "Where is the retry loop?" },
+    });
+    emit({
+      type: "tool_execution_end",
+      toolCallId: "kb2",
+      toolName: "query_knowledge_base",
+      isError: false,
+      result: {
+        content: [{ type: "text", text: "Matched prior learnings" }],
+        details: {
+          ok: true,
+          matches: [{ confidence: 0.61 }, { confidence: 0.84 }],
+        },
+      },
+    });
+
+    const tools = finishedSpans().filter((span) => span.name === "hodor.tool");
+    const miss = tools.find((span) => span.attributes["hodor.kb.result"] === "no_match");
+    const hit = tools.find((span) => span.attributes["hodor.kb.result"] === "match");
+    expect(miss?.attributes["hodor.kb.match_count"]).toBe(0);
+    expect(miss?.attributes["hodor.kb.closure_required"]).toBe(true);
+    expect(miss?.attributes["hodor.kb.top_score"]).toBeUndefined();
+    expect(miss?.attributes["hodor.tool.outcome"]).toBe("no_match");
+    expect(hit?.attributes["hodor.kb.top_score"]).toBe(0.84);
+    expect(hit?.attributes["hodor.kb.match_count"]).toBe(2);
+    const query = finishedSpans().find((span) => span.name === "hodor.kb.query");
+    expect(query?.parentSpanContext?.spanId).toBe(miss?.spanContext().spanId);
+    expect(JSON.stringify(miss?.attributes)).not.toContain("learning");
   });
 
   it("patches createAgentSession through the instrumentation definition", async () => {
@@ -217,7 +326,30 @@ describe("review signals", () => {
     const query = finishedSpans().find((item) => item.name === "hodor.kb.query");
     expect(query?.attributes["hodor.kb.result"]).toBe("no_match");
     expect(query?.attributes["hodor.kb.match_count"]).toBe(0);
+    expect(query?.attributes["hodor.kb.top_score"]).toBeUndefined();
     expect(JSON.stringify(query?.attributes)).not.toContain("confidence");
+
+    const extract = startSpan("hodor.kb.extract", {});
+    annotateKnowledge(
+      extract,
+      "review",
+      "extract",
+      "openai/gpt-5.6-luna",
+      { extracted: 2, saved: 2, updated: 0, rejected: 0 },
+      {
+        inputTokens: 3,
+        outputTokens: 1045,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 16460,
+        cost: 0.02,
+      },
+    );
+    extract.end();
+    const knowledge = finishedSpans().find((item) => item.name === "hodor.kb.extract");
+    expect(knowledge?.attributes["gen_ai.usage.cache_creation.input_tokens"]).toBe(
+      16460,
+    );
+    expect(knowledge?.attributes["hodor.usage.cost_usd"]).toBe(0.02);
   });
 
   it("counts learn-stage knowledge points and pushes hodor_runs_total", async () => {
