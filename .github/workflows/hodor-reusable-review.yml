@@ -171,7 +171,17 @@ jobs:
             cmd+=("--prompt" "${CUSTOM_PROMPT}")
           fi
 
+          cluster_dns="$(awk '/^nameserver / { print $2; exit }' /etc/resolv.conf || true)"
+          dns_args=()
+          if [ -n "${cluster_dns}" ]; then
+            dns_args=(--dns "${cluster_dns}")
+          fi
+
           docker run --pull=missing --rm --user 0:0 \
+            "${dns_args[@]}" \
+            -e OTEL_SERVICE_NAME="hodor" \
+            -e OTEL_EXPORTER_OTLP_ENDPOINT="http://alloy.ns-7dpt7m5sy72p.svc.cluster.local:4317" \
+            -e HODOR_METRICS_REMOTE_WRITE_URL="http://alloy.ns-7dpt7m5sy72p.svc.cluster.local:9091/api/v1/metrics/write" \
             -e GITHUB_ACTIONS="true" \
             -e GITHUB_WORKSPACE="${GITHUB_WORKSPACE}" \
             -e GITHUB_REPOSITORY="${GITHUB_REPOSITORY}" \

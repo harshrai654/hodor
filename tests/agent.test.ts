@@ -109,6 +109,26 @@ describe("formatMetricsMarkdown", () => {
     expect(markdown).not.toContain("cached");
     expect(markdown).not.toContain("Cost");
   });
+
+  it("appends a trace id when one is provided", () => {
+    const metrics: ReviewMetrics = {
+      inputTokens: 10,
+      outputTokens: 2,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      totalTokens: 12,
+      cost: 0,
+      turns: 1,
+      toolCalls: 1,
+      durationSeconds: 4,
+    };
+
+    const markdown = formatMetricsMarkdown(metrics, {
+      traceId: "abc123",
+    });
+
+    expect(markdown).toContain("- Trace: `abc123`");
+  });
 });
 
 describe("postReviewComment", () => {

@@ -16,7 +16,10 @@ function formatDuration(seconds: number): string {
   return `${seconds}s`;
 }
 
-export function formatMetricsMarkdown(metrics: ReviewMetrics): string {
+export function formatMetricsMarkdown(
+  metrics: ReviewMetrics,
+  opts?: { traceId?: string },
+): string {
   const parts = [`in \`${tok(metrics.inputTokens)}\``];
   if (metrics.cacheReadTokens > 0) {
     parts.push(`cached \`${tok(metrics.cacheReadTokens)}\``);
@@ -29,6 +32,9 @@ export function formatMetricsMarkdown(metrics: ReviewMetrics): string {
   ];
   if (metrics.cost > 0) {
     lines.push(`- Cost: \`$${metrics.cost.toFixed(4)}\``);
+  }
+  if (opts?.traceId) {
+    lines.push(`- Trace: \`${opts.traceId}\``);
   }
   return lines.join("\n");
 }

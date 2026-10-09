@@ -1,3 +1,4 @@
+import { context, SpanStatusCode } from "@opentelemetry/api";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
@@ -30,6 +31,24 @@ import {
   runKnowledgeExtraction,
   checkExtractionModelConnectivity,
 } from "./extractor.js";
+import {
+  instrumentAgentSession,
+  providerName,
+} from "./observability/instrumentation-pi.js";
+import {
+  GEN_AI_PROVIDER_NAME,
+  GEN_AI_REQUEST_MODEL,
+} from "./observability/genai.js";
+import { resetTouchedFiles } from "./observability/files.js";
+import {
+  annotateKnowledge,
+  annotateReview,
+  parentContext,
+  startSpan,
+  traceKbQuery,
+  withActiveSpan,
+} from "./observability/signals.js";
+import { recordRun } from "./observability/metrics.js";
 import type {
   Platform,
   ParsedPrUrl,
@@ -512,21 +531,65 @@ export async function reviewPr(opts: {
     }
   }
   // --- End preflight ---
-  // Setup workspace
-  const { workspace, targetBranch, diffBaseSha, isTemporary } =
-    await setupWorkspace({
-      platform,
-      owner,
-      repo,
-      prNumber: String(prNumber),
-      host,
-      workingDir: workspaceDir ?? undefined,
-      reuse: workspaceDir != null,
+  const reviewSpan = startSpan("hodor.review", {
+    "hodor.pr.url": prUrl,
+    "hodor.repo": targetRepo,
+    [GEN_AI_REQUEST_MODEL]: model,
+    ...(providerName(parsed.provider)
+      ? { [GEN_AI_PROVIDER_NAME]: providerName(parsed.provider)! }
+      : {}),
+    ...(process.env.GITHUB_RUN_ID
+      ? { "hodor.github.run_id": process.env.GITHUB_RUN_ID }
+      : {}),
+  });
+  const reviewCtx = parentContext(reviewSpan);
+  resetTouchedFiles();
+  let reviewRecorded = false;
+
+  let workspace: string;
+  let targetBranch: string;
+  let diffBaseSha: string | null;
+  let isTemporary: boolean;
+  try {
+    const setup = await context.with(reviewCtx, () =>
+      withActiveSpan("hodor.workspace.setup", {}, () =>
+        setupWorkspace({
+          platform,
+          owner,
+          repo,
+          prNumber: String(prNumber),
+          host,
+          workingDir: workspaceDir ?? undefined,
+          reuse: workspaceDir != null,
+        }),
+      ),
+    );
+    workspace = setup.workspace;
+    targetBranch = setup.targetBranch;
+    diffBaseSha = setup.diffBaseSha;
+    isTemporary = setup.isTemporary;
+  } catch (err) {
+    recordRun({
+      command: "review",
+      model,
+      repo: targetRepo,
+      outcome: "failure",
     });
+    reviewSpan.recordException(
+      err instanceof Error ? err : new Error(String(err)),
+    );
+    reviewSpan.setStatus({
+      code: SpanStatusCode.ERROR,
+      message: err instanceof Error ? err.message : String(err),
+    });
+    reviewSpan.end();
+    throw err;
+  }
 
   const workspacePath = workspace;
 
   try {
+    return await context.with(reviewCtx, async () => {
     // Fetch PR metadata
     let mrMetadata: MrMetadata | null = null;
     if (platform === "gitlab") {
@@ -751,16 +814,28 @@ export async function reviewPr(opts: {
       parameters: QUERY_KNOWLEDGE_BASE_SCHEMA,
       execute: async (_toolCallId, params, _signal, _onUpdate, _ctx) => {
         kbQueryCalls++;
+        const queryParams = params as {
+          query: string;
+          paths?: string[];
+          symbols?: string[];
+          max_results?: number;
+        };
         const result = await queryKnowledgeBase(
           knowledgeBaseConfig,
           targetRepo,
-          params as {
-            query: string;
-            paths?: string[];
-            symbols?: string[];
-            max_results?: number;
-          },
+          queryParams,
         );
+        const kbResult = !result.ok
+          ? "error"
+          : result.matches.length === 0
+            ? "no_match"
+            : "match";
+        traceKbQuery({
+          query: queryParams.query,
+          result: kbResult,
+          matchCount: result.matches.length,
+          closureRequired: kbResult === "no_match",
+        });
         if (!result.ok) {
           return {
             content: [
@@ -873,6 +948,11 @@ export async function reviewPr(opts: {
       sessionManager: SessionManager.inMemory(),
       settingsManager,
       resourceLoader,
+    });
+    instrumentAgentSession(session, {
+      model: piModel.id,
+      provider: piModel.provider,
+      command: "review",
     });
 
     // Subscribe to agent events for progress + metrics tracking
@@ -1080,15 +1160,30 @@ export async function reviewPr(opts: {
             }
           ).state?.messages ?? [];
         const reviewOutputJson = JSON.stringify(review, null, 2);
-        const extractionResult = await runKnowledgeExtraction({
-          config: knowledgeBaseConfig,
-          targetRepo,
-          prUrl,
-          reviewModel: model,
-          reviewPiModel: piModel,
-          transcript: transcriptMessages,
-          reviewOutput: reviewOutputJson,
-        });
+        const extractionResult = await withActiveSpan(
+          "hodor.kb.extract",
+          { "hodor.repo": targetRepo },
+          async (span) => {
+            const extracted = await runKnowledgeExtraction({
+              config: knowledgeBaseConfig,
+              targetRepo,
+              prUrl,
+              reviewModel: model,
+              reviewPiModel: piModel,
+              transcript: transcriptMessages,
+              reviewOutput: reviewOutputJson,
+            });
+            annotateKnowledge(
+              span,
+              "review",
+              "extract",
+              model,
+              extracted,
+              extracted.llmMetrics,
+            );
+            return extracted;
+          },
+        );
         knowledgeExtraction = { attempted: true, ...extractionResult };
         if (extractionResult.saved > 0 || extractionResult.updated > 0) {
           logger.info(
@@ -1123,9 +1218,29 @@ export async function reviewPr(opts: {
       };
     }
 
+    const traceId = annotateReview({
+      span: reviewSpan,
+      model,
+      repo: targetRepo,
+      outcome: "success",
+      usage: metrics,
+      turns: metrics.turns,
+      toolCalls: metrics.toolCalls,
+      durationSeconds: metrics.durationSeconds,
+      correctness: review.overall_correctness,
+      confidenceNotes: review.confidence_notes,
+      findings: review.findings.length,
+      closureRequired: kbNoMatchResponses > 0,
+      knowledge:
+        knowledgeExtraction?.attempted === true
+          ? knowledgeExtraction
+          : undefined,
+    });
+    reviewRecorded = true;
+
     let metricsFooter: string | null = null;
     if (includeMetricsFooter) {
-      const lines = [formatMetricsMarkdown(metrics)];
+      const lines = [formatMetricsMarkdown(metrics, { traceId })];
       if (knowledgeExtraction) {
         lines.push(formatKnowledgeExtractionMarkdown(knowledgeExtraction));
       }
@@ -1140,7 +1255,26 @@ export async function reviewPr(opts: {
     };
 
     return { review, metricsFooter, renderContext };
+    });
+  } catch (err) {
+    if (!reviewRecorded) {
+      recordRun({
+        command: "review",
+        model,
+        repo: targetRepo,
+        outcome: "failure",
+      });
+    }
+    reviewSpan.recordException(
+      err instanceof Error ? err : new Error(String(err)),
+    );
+    reviewSpan.setStatus({
+      code: SpanStatusCode.ERROR,
+      message: err instanceof Error ? err.message : String(err),
+    });
+    throw err;
   } finally {
+    reviewSpan.end();
     // Restore mutated env vars
     for (const [key, val] of Object.entries(envSnapshot)) {
       if (val === undefined) {

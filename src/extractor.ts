@@ -9,6 +9,7 @@ import {
   type SaveKnowledgeInput,
 } from "./knowledge.js";
 import { logger } from "./utils/logger.js";
+import { instrumentAgentSession } from "./observability/instrumentation-pi.js";
 
 function getTemplatesDir(): string {
   const currentDir = dirname(fileURLToPath(import.meta.url));
@@ -257,6 +258,10 @@ export async function checkExtractionModelConnectivity(opts: {
       settingsManager,
       resourceLoader,
     });
+    instrumentAgentSession(session, {
+      model: modelName,
+      command: "review",
+    });
     await session.prompt("Reply with OK.");
 
     const agentError = (session as unknown as { state: { error?: string } })
@@ -364,6 +369,10 @@ export async function runKnowledgeExtraction(opts: {
       sessionManager: SessionManager.inMemory(),
       settingsManager,
       resourceLoader,
+    });
+    instrumentAgentSession(session, {
+      model: modelName,
+      command: "review",
     });
 
     await session.prompt(prompt);

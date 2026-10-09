@@ -15,6 +15,9 @@ import {
   type SaveKnowledgeInput,
 } from "./knowledge.js";
 import { logger } from "./utils/logger.js";
+import { instrumentAgentSession } from "./observability/instrumentation-pi.js";
+import { GEN_AI_REQUEST_MODEL } from "./observability/genai.js";
+import { annotateKnowledge, startSpan } from "./observability/signals.js";
 import type { Platform } from "./types.js";
 
 export interface PrComment {
@@ -346,6 +349,11 @@ export async function runFeedbackExtraction(opts: {
     prConversation: conversationText,
   });
 
+  const learnSpan = startSpan("hodor.learn.extract", {
+    "hodor.pr.url": opts.prUrl,
+    "hodor.repo": opts.targetRepo,
+    [GEN_AI_REQUEST_MODEL]: modelName,
+  });
   let candidates: SaveKnowledgeInput[];
   try {
     try {
@@ -392,6 +400,12 @@ export async function runFeedbackExtraction(opts: {
         sessionManager: SessionManager.inMemory(),
         settingsManager,
         resourceLoader,
+      });
+
+      instrumentAgentSession(session, {
+        model: modelName,
+        provider: parsed.provider,
+        command: "learn",
       });
 
       await session.prompt(prompt);
@@ -461,6 +475,15 @@ export async function runFeedbackExtraction(opts: {
     );
     return result;
   } finally {
+    annotateKnowledge(
+      learnSpan,
+      "learn",
+      "learn",
+      modelName,
+      result,
+      result.llmMetrics,
+    );
+    learnSpan.end();
     for (const [key, value] of Object.entries(envSnapshot)) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;

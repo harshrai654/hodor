@@ -22,7 +22,23 @@ import {
   type GitHubCheckRunConclusion,
 } from "./github-checks.js";
 import { mapReviewEventToCheckStage } from "./review-check-stages.js";
+import { SpanStatusCode } from "@opentelemetry/api";
 import { exec } from "./utils/exec.js";
+import {
+  finishObservability,
+  startObservability,
+} from "./observability/sdk.js";
+import {
+  requestExit,
+  requestedExitCode,
+} from "./observability/lifecycle.js";
+import { recordRun } from "./observability/metrics.js";
+import {
+  annotateLearnRoot,
+  startSpan,
+  withParentSpan,
+} from "./observability/signals.js";
+import { GEN_AI_REQUEST_MODEL } from "./observability/genai.js";
 
 const program = new Command();
 
@@ -352,7 +368,7 @@ program
       if (verbose && err instanceof Error && err.stack) {
         console.error(chalk.dim(err.stack));
       }
-      process.exit(1);
+      requestExit(1);
     }
   });
 
@@ -393,10 +409,21 @@ program
     const githubToken = process.env.GITHUB_TOKEN;
     let checkProgress: GitHubCheckRunProgress | null = null;
 
+    const learnSpan = startSpan("hodor.learn", {
+      "hodor.pr.url": prUrl,
+      [GEN_AI_REQUEST_MODEL]: model,
+      ...(process.env.GITHUB_RUN_ID
+        ? { "hodor.github.run_id": process.env.GITHUB_RUN_ID }
+        : {}),
+    });
+    let learnOutcome: "success" | "failure" = "success";
+    let learnRepo = "unknown";
     try {
       const platform = detectPlatform(prUrl);
       const parsed = parsePrUrl(prUrl);
       const targetRepo = `${parsed.owner}/${parsed.repo}`;
+      learnRepo = targetRepo;
+      learnSpan.setAttribute("hodor.repo", targetRepo);
 
       log(`\n${chalk.bold.cyan("Hodor - Feedback Learning")}`);
       log(chalk.dim(`Platform: ${platform.toUpperCase()}`));
@@ -502,7 +529,9 @@ program
             "failure",
             "Knowledge base not enabled; cannot learn.",
           );
-          process.exit(1);
+          learnOutcome = "failure";
+          requestExit(1);
+          return;
         }
 
         const health = await checkKnowledgeBaseHealth(kbConfig);
@@ -514,7 +543,9 @@ program
             "failure",
             "Knowledge base health check failed; cannot learn.",
           );
-          process.exit(1);
+          learnOutcome = "failure";
+          requestExit(1);
+          return;
         }
         if (!health.writable) {
           log(
@@ -526,18 +557,23 @@ program
             "failure",
             "Knowledge base not writable; cannot learn.",
           );
-          process.exit(1);
+          learnOutcome = "failure";
+          requestExit(1);
+          return;
         }
       }
 
-      const result = await runFeedbackExtraction({
-        config: kbConfig,
-        targetRepo,
-        prUrl,
-        model,
-        conversationContext: conversationCtx,
-        dryRun,
-      });
+      const result = await withParentSpan(learnSpan, () =>
+        runFeedbackExtraction({
+          config: kbConfig,
+          targetRepo,
+          prUrl,
+          model,
+          conversationContext: conversationCtx,
+          dryRun,
+        }),
+      );
+      annotateLearnRoot(learnSpan, model, result);
 
       log();
       if (result.extracted === 0) {
@@ -618,6 +654,7 @@ program
       }
 
       if (feedbackPostedOk === false) {
+        learnOutcome = "failure";
         checkConclusion = "failure";
         checkSummary =
           "Learnings extracted, but failed to post feedback comment.";
@@ -638,8 +675,29 @@ program
       if (verbose && err instanceof Error && err.stack) {
         console.error(chalk.dim(err.stack));
       }
-      process.exit(1);
+      learnOutcome = "failure";
+      requestExit(1);
+    } finally {
+      recordRun({
+        command: "learn",
+        model,
+        repo: learnRepo,
+        outcome: learnOutcome,
+      });
+      if (learnOutcome === "failure") {
+        learnSpan.setStatus({ code: SpanStatusCode.ERROR });
+      }
+      learnSpan.end();
     }
   });
 
-program.parse();
+startObservability();
+try {
+  await program.parseAsync(process.argv);
+} finally {
+  await finishObservability();
+}
+const exitCode = requestedExitCode();
+if (exitCode) {
+  process.exit(exitCode);
+}
